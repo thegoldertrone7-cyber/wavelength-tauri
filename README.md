@@ -1,0 +1,264 @@
+# Wavelength
+
+Free, ad-free music app. Paste a Spotify link, it finds the songs on YouTube, plays them
+ad-free with endless playback, downloads MP3s, plays your own lossless files at native quality,
+custom playlist images, multiple interface styles, Catppuccin palettes and custom accent colours.
+Smart volume evens out quiet and loud tracks, smart shuffle balances songs across playlists, and
+the listening recap can cover a year or any custom date range.
+The product thesis, full feature map, platform status and release plan are in
+[PRODUCT_BIBLE.md](PRODUCT_BIBLE.md). The visual language and motion rules are in
+[DESIGN.md](DESIGN.md).
+
+## Download
+
+**Latest stable — v2.4.1.** All files are on the
+[v2.4.1 release page](https://github.com/thegoldertrone7-cyber/wavelength/releases/tag/v2.4.1);
+checksums are in `SHA256SUMS.txt`.
+
+- **macOS** (Intel + Apple Silicon): `Wavelength-2.4.1-macos-universal.dmg`
+- **Windows**: `Wavelength-2.4.1-windows-setup.exe`
+- **Linux**: `Wavelength-2.4.1-linux.AppImage`, `Wavelength-2.4.1-linux-arm64.AppImage`
+  or `Wavelength-2.4.1-linux-x86_64.flatpak`
+- **Android**: `Wavelength-2.4.1-android.apk`
+
+**Overhaul — 2.7.2.** A separate release built from the `Overhaul` branch, with the same four
+platforms on the [Overhaul release page](https://github.com/thegoldertrone7-cyber/wavelength/releases/tag/v2.7.2-overhaul).
+This is the first build that can **receive in-app updates**: it contains the update signing key and
+reads its own channel, so a signed bundle of the interface and player can update the app without a
+new installer, and a failed update rolls back on the next start. Later updates are published with
+`npm run make:update` and installed from **Settings → Updates**; [UPDATES.md](UPDATES.md) has the
+details. The **macOS build keeps its own squared app icon** in the Dock and app bundle, while
+Windows, Linux, Android, the Flatpak and the web app keep the current Wavelength mark. It includes
+everything from 2.6.0 — the smart intro/outro skipper, window layouts, 33 more themes, synced
+lyrics, song-editor upgrades — and the 2.5.x work (motion v3, playback speed, twenty visualizer
+styles, undo and filtering, queue tools, sleep timer).
+
+- **macOS** (Intel + Apple Silicon): `Wavelength-2.7.2-macos-universal.dmg` (squared icon)
+- **Windows**: `Wavelength-2.7.2-windows-setup.exe`
+- **Linux**: `Wavelength-2.7.2-linux.AppImage`, `Wavelength-2.7.2-linux-arm64.AppImage`
+  or `Wavelength-2.7.2-linux-x86_64.flatpak`
+- **Android**: `Wavelength-2.7.2-android.apk`
+
+The macOS and Windows builds are unsigned, so the first launch shows the usual warning. Installation
+details, sync steps and limits are in [DOWNLOADS.md](DOWNLOADS.md).
+
+## Desktop app (macOS / Windows / Linux)
+
+You need Node.js, yt-dlp and ffmpeg (which includes ffprobe). macOS:  `brew install node yt-dlp ffmpeg`
+
+    npm install          # downloads Electron (~100 MB, once)
+    npm run app          # opens Wavelength as a real app window
+
+Build an installable app (run it on the OS you are building for):
+
+    npm run dist:mac     # -> dist/Wavelength-*.dmg
+    npm run dist:win     # -> dist/Wavelength Setup *.exe   (run on Windows)
+    npm run dist:linux   # -> dist/Wavelength-*.AppImage    (run on Linux)
+    bash scripts/build-flatpak.sh   # -> dist/Wavelength-*-x86_64.flatpak (Linux)
+
+The desktop packages and Flatpak are also built by GitHub Actions on every push to `main`.
+Each release page lists the installation files included; v2.4.1 and the separate Overhaul 2.7.2
+release each ship macOS, Windows, Linux and Android together.
+
+The app is unsigned. First launch on macOS: right-click the app -> Open, or run
+`xattr -cr /Applications/Wavelength.app`.
+yt-dlp and ffmpeg/ffprobe are not bundled with the normal desktop builds; install them as above
+(`brew upgrade yt-dlp` if playback ever breaks). The Flatpak bundles both tools.
+
+## Browser mode (no Electron)
+
+    ./start.sh           # macOS / Linux  (start.bat on Windows)
+
+Opens http://127.0.0.1:3000 on this computer. That loopback-only default is
+deliberate: a normal browser session is not exposed to the network. To let a
+phone or another computer connect, start it with:
+
+    HOST=0.0.0.0 ./start.sh
+
+Then use the `Network → http://…:3000` address it prints. The desktop app does
+this automatically and shows the address in **Settings → Devices**.
+
+## Lossless local files
+
+Open **Local files** in the sidebar, then choose **Add audio files**. FLAC, WAV, AIFF, ALAC, M4A, MP3,
+OGG and Opus files are copied into Wavelength's local library, read with ffprobe, and streamed back at
+their original bit depth and sample rate. Nothing is transcoded. Embedded artwork is extracted
+automatically. You can rescan the folder or delete individual files from the local view.
+
+YouTube-sourced playback remains lossy; Wavelength labels the two sources separately instead of calling
+a YouTube stream lossless. Settings → Playback also has a **Streaming quality** choice: Best available
+or Data saver. Local-file playback is currently a desktop feature; the standalone Android build does not
+read files from the phone yet.
+
+## Visualizer styles
+
+The full-screen player has twenty visualizer styles. Open the gallery from **Settings → Preview
+styles**, the **Style** button in the full-screen player, or press **V**. Every card animates live
+in your accent colour; tap one to use it. On Android the lock-screen view draws the closest of the
+four classic looks (Matrix, Bars, Wave, Radial) for styles it does not have.
+
+## Quality-of-life features
+
+- **Undo** for removing a song, clearing or removing from the queue, removing duplicates and
+  deleting a playlist (the toast's Undo button, or ⌘/Ctrl+Z). Deleting a playlist no longer asks first.
+- **Filter box** inside long playlists and Liked Songs, and a playlist **More** menu: add to queue,
+  play next, remove duplicates, copy the song list.
+- **Queue**: drag the grip to reorder, **Mix** shuffles only what is still to come, **Save** turns the
+  queue into a playlist.
+- **Sleep timer** from the full-screen player or **T**, including "After this song".
+- **Touch**: swipe a song right for Play next or left to like it (switch off under Settings →
+  Playback); double-tap the left or right of the artwork to skip 10 seconds.
+- **Edit a song's title, artist and thumbnail** from its ••• menu, the **Edit** button in the full-screen
+  player, or **E**. The change shows everywhere that song appears on this device, you can restore the
+  original at any time, and it has an Undo. Thumbnails can be uploaded or pasted as a link.
+- **Playback speed** (0.75×–2×) from the full-screen player, or `[` and `]`.
+- **More by this artist** and **Duplicate playlist** in the menus.
+- **Smoother motion:** covers and the player artwork travel between screens, lists glide when sorted,
+  filtered or reordered, the nav highlight slides, and the seek bar moves every frame.
+- Home shows **Resume**, **Play liked** and **Smart shuffle** shortcuts.
+- `?` opens the shortcut sheet (it used to focus search instead).
+
+## Importing from Spotify
+
+Spotify -> Share -> Copy link -> paste into Wavelength (Import page, or straight into the search box).
+Playlists, albums and songs work. The playlist must be public. Without signing in, Spotify shares the
+first 100 songs of a playlist; "Paste a list of songs" always works for any length.
+Signing in with Spotify is optional (only for playlists over 100 songs and liked songs): create an app at
+developer.spotify.com/dashboard, add the Redirect URI shown on the Import page, paste the Client ID.
+Spotify links and account import run on the desktop; the standalone Android build accepts a pasted list
+of songs and matches them on YouTube.
+
+## Device sync
+
+Open **Settings -> Devices** on the device that should keep the main library and choose **Start hosting**.
+On the other device, choose **Join a host**, then enter the host address and the short pairing code.
+Playlists, liked songs, history and listening stats stay in sync; themes, downloads and local files stay
+on each device. On current versions, **Connecting merges** this device with the host, so neither library
+is thrown away. **Merge data** is available on every connected device, including the host.
+
+Merge previews the other copy first. New playlists, songs and liked songs are added automatically.
+Anything this device used to have but no longer does — while another copy still has it — opens a
+checklist instead: tick the items to bring back, or clear them to leave those items only on the
+other copy. Unchecked items are never deleted from the device that still has them. Listening history
+is always combined, and per-device listening totals keep the newest snapshot instead of being added
+twice.
+
+Merge is additive and not a deletion sync: deleting a playlist here does not delete it elsewhere,
+and a later merge will not quietly restore it unless you tick it. Wavelength keeps a grow-only
+baseline of items this device has seen, which is how it tells a genuinely new item from one that was
+removed here. The host cannot reach a sleeping guest, so its Merge data button combines the host copy
+with the libraries guests sent during the current hosting session. **Pull now** still replaces this
+device's library with the host's copy; **Send changes** replaces the host's library with this
+device's copy. There is no automatic background merge.
+
+The sync listener uses the next port after the player (`38422` for the desktop app). It is only active
+while Wavelength is open. Use Tailscale on both devices, or join over the same Wi-Fi and allow that port
+through the host firewall. Every paired guest can send changes.
+
+## Listening recap
+
+Open **Recap** in the sidebar to see total listening time, plays, top songs, top artists and top
+playlists. Pick a year chip or enter any start and end date, then choose **Apply**.
+
+Complete calendar years use full-year totals, including listening recorded before daily detail existed.
+Custom date ranges use the daily listening detail recorded from this version onward: total time is
+complete for a range, but rankings for older days may be partial and are labelled when that happens.
+Devices are merged without counting the same device twice. YouTube does not provide reliable genre
+metadata, so the recap ranks artists, playlists and songs instead of inventing a genre. The recap is
+stored locally and travels with the library during sync.
+
+## Android
+
+Download the APK from the [Releases page](https://github.com/thegoldertrone7-cyber/wavelength/releases).
+
+The Android build is **standalone**. Search, streaming and your playlists run on the phone.
+It does not need the desktop app, Node, `yt-dlp`, `ffmpeg` or a Wavelength server. An internet
+connection is still required for YouTube playback.
+
+The phone uses NewPipeExtractor to resolve YouTube audio directly. The first launch after
+upgrading from the old companion APK tries to import the library from the last server address;
+after that, the library lives in the app and survives with the computer off. Grant the
+notification permission when asked so playback controls appear on the lock screen.
+
+On Android today:
+
+- Search YouTube, play songs and build playlists on the phone.
+- Keep the library on the phone and optionally sync it with a computer.
+- Merge the phone and computer libraries without removing either copy.
+- Control playback from the lock screen, notification, Bluetooth or a headset. Disconnecting
+  Bluetooth pauses playback when **Pause when headphones disconnect** is on.
+- Change volume from the full-screen player or **Settings → Playback**. It moves the phone's
+  media stream, so the slider, the hardware keys and Android's volume panel stay in step.
+- Turn on **Smart volume** in **Settings → Playback**. The phone samples the first few seconds of
+  each song natively and turns louder songs down. It never boosts above your set volume, so quiet
+  songs stay quiet; it is best-effort balancing, not a studio master.
+- Add the Wavelength home-screen widget. Tall sizes show the artwork, title, artist, album, a
+  progress bar and previous, play/pause, next and like buttons; shorter sizes switch to a compact
+  strip. The play button uses your accent colour. If Wavelength is not running, Play opens it and
+  resumes where you left off.
+- Press and hold the app icon for shortcuts: Search, Liked songs, Smart shuffle.
+- Back closes the full-screen player, queue and dialogs first. At the start screen it sends the app
+  to the background while music plays instead of stopping it.
+- Like or unlike the current song from the notification, the media controls and the widget.
+- Open the full-screen player for the visualizer. All four styles are there, in small, medium,
+  large and full-screen sizes; the full-screen size turns the visualizer into the player backdrop.
+  Android plays audio inside the WebView, which exposes no samples, so the phone draws a
+  track-seeded spectrum from the playback clock: it moves while a song plays and settles flat on
+  pause. It is not a real audio spectrum, and the settings say so. The output meter under the
+  full-screen volume slider follows the same rule: live audio on desktop and in the browser,
+  playback-driven on Android, never a claim to measure the phone's stream.
+- Lock the phone during playback to see a brief now-playing view: artwork, song details, progress,
+  controls, and the visualizer as the background. It fades out after a few seconds. On Android 14
+  and newer, settings offers an **Allow lock-screen display** row when Android still needs the
+  full-screen notification permission.
+- Import a pasted list of songs from the Import page.
+
+Not yet available on Android: direct Spotify links/account import, offline downloads and
+local-file playback. Those remain desktop features for now; on the phone, paste song names
+on the Import page and Wavelength matches them on YouTube.
+
+### Optional computer sync
+
+The computer is only needed while syncing; disconnect and keep listening on the phone.
+
+1. On the computer, open **Settings → Devices → Start hosting**. Note the address
+   (for example `http://192.168.1.10:38422`) and the pairing code.
+2. On the phone, open **Settings → Devices → Join a host**, then tap **Find devices** to look for
+   the computer on the same Wi-Fi. You can also type the address including the sync port and the
+   pairing code. Find devices cannot see a computer over Tailscale; paste its `100.x` address
+   instead.
+3. Use **Merge data** to combine both libraries while keeping every playlist. Use **Pull now** only
+   when you want the host copy to replace the phone, or **Send changes** to replace the host with the
+   phone copy. **Disconnect** when finished.
+
+The sync listener runs only while Wavelength is open on the computer. Use Tailscale on both
+devices, or the same Wi-Fi and allow that port through the host firewall. Only sync on a
+network you trust. `127.0.0.1` / `localhost` on the phone means the phone itself, not the
+computer; use the computer's LAN or Tailscale address.
+
+For browser-only use, HTTPS is needed for Chrome's Install app / Share-target features
+(for example `tailscale serve --bg 3000`).
+
+## Your data
+
+Browser mode: ./data.  Desktop app: the app's user-data folder.  Local lossless files live under
+`data/local` (or the equivalent user-data folder).  MP3s: ~/Music/Wavelength (change in Settings).
+
+## Note
+
+Streaming and downloading from YouTube is against YouTube's terms. Personal use only.
+
+## New in this version
+
+- **Smart intro/outro skipper** (Settings → Playback; all Off by default): chapters, description timestamps, SponsorBlock data and ffmpeg silence detection, merged with confidence scores. Off / Skip button / Automatic per intros, outros and breaks, Undo, learns from rewinds, seek-bar marks, **K** to skip. Unit tests: `node --test tests/skipper.test.js`.
+- **Layouts** (Settings → Appearance → Layout): sidebar left/right/top/rail/hidden, player bottom/top/floating, centred content, 8 presets with previews. Wide windows only.
+- **33 more themes** (`public/js/themes.js`; regenerate CSS with `node scripts/gen-themes.js`), **dotted background** with opacity and spacing, **custom CSS** box.
+- **Lyrics** from LRCLIB (**Y** in the full-screen player), synced with tap-to-seek, looked up only when opened.
+- **Spotify image** button in the song editor, **Enter** confirms song edits, rounded **scrollbars** (Settings → Motion & sound).
+
+## Not finished (planned, not built)
+
+- Opening screen to choose features, plus the "Features" restore section at the bottom of Settings.
+- Hide/remove individual visualizer styles.
+- Android: pin a playlist to the home screen, lock-screen hierarchy, and extra Android lag work (e.g. lighter blur). Android code in this version is untested (no APK build here).
+- Discord support, daily/cross-device sync features, and a Rust rewrite.

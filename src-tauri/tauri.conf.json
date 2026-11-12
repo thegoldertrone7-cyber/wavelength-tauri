@@ -1,0 +1,28 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Wavelength",
+  "version": "2.8.0",
+  "identifier": "app.wavelength.music.tauri",
+  "build": {
+    "frontendDist": "../public"
+  },
+  "app": {
+    "windows": [],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "icon": [
+      "icons/icon.png"
+    ],
+    "resources": {
+      "../public/": "public/"
+    },
+    "category": "Music",
+    "shortDescription": "Wavelength",
+    "longDescription": "Free, ad-free music player with a Rust core and native audio."
+  }
+}
