@@ -27,7 +27,7 @@
   },
   "plugins": {
     "updater": {
-      "pubkey": "",
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDM2QjcyMTE5OEUwQ0U3MTEKUldRUjV3eU9HU0czTnA1am5QQU9hR0gyWXVWVUxkaGxOVWhocDhBWmE5bHlvMTVBSmQ2SVpMMUQK",
       "endpoints": [
         "https://github.com/thegoldertrone7-cyber/wavelength-tauri/releases/latest/download/latest.json"
       ],
