@@ -1,0 +1,45 @@
+name: Flatpak bundle
+# Builds the Linux Flatpak on its own, without a tag or the updater signing key.
+# Run it from the Actions tab (or `gh workflow run flatpak.yml`), then download
+# the artifact. Tagged releases build the same bundle in release.yml and attach
+# it to the release.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  flatpak:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with: { node-version: 20 }
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: swatinem/rust-cache@v2
+        with: { workspaces: src-tauri }
+
+      - name: Install build and Flatpak dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev \
+            patchelf libasound2-dev pkg-config flatpak flatpak-builder
+
+      - run: npm install
+
+      - name: Build the Linux binary
+        run: npx tauri build --no-bundle
+
+      - name: Package the Flatpak
+        run: bash scripts/build-flatpak.sh
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wavelength-flatpak
+          path: dist/*.flatpak
+          if-no-files-found: error

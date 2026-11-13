@@ -140,6 +140,8 @@ EOF
 
 if ! flatpak info --user "org.gnome.Sdk//$RUNTIME_VERSION" >/dev/null 2>&1; then
   echo "Installing the GNOME SDK $RUNTIME_VERSION (once, several hundred MB)…"
+  flatpak remote-add --user --if-not-exists flathub \
+    https://dl.flathub.org/repo/flathub.flatpakrepo
   flatpak install --user -y --noninteractive flathub \
     "org.gnome.Sdk//$RUNTIME_VERSION" "org.gnome.Platform//$RUNTIME_VERSION"
 fi
