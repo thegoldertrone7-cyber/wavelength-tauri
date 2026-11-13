@@ -128,8 +128,7 @@ Known gaps, in priority order:
 8. **Media keys / Now Playing** — `navigator.mediaSession` is still wired by
    the UI, but Tauri needs an `MPNowPlayingInfoCenter` bridge for real system
    integration.
-9. **Update channel** — native builds update as an app bundle; the web-layer
-   updater is intentionally disabled.
+9. ~~Update channel~~ — done in 2.9.0: GitHub Releases through the Tauri updater (UPDATES.md).
 
 ## Build a bundle
 
@@ -147,5 +146,4 @@ sync listener on `:47824` is only started when the user hosts.
 - The alternative music platform is still deferred.
 - The Android shell is untouched; a future Android core should be Kotlin +
   Media3 rather than embedding this desktop stack.
-- No Minecraft mod work was started because the loader/version/behaviour
-  questions are still unanswered.
+- Minecraft: done in 2.9.0 (`src-tauri/src/bridge.rs`, `public/js/bridge.js`).

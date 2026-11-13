@@ -4,3 +4,13 @@ src-tauri/gen/schemas/
 .DS_Store
 *.bak
 *.log
+
+# Flatpak packaging output
+flatpak/
+flatpak-build/
+flatpak-repo/
+vendor/
+dist/
+
+src-tauri/tauri.conf.local.json
+*.key

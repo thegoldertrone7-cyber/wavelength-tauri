@@ -1,6 +1,8 @@
 pub mod api;
 pub mod audio;
+pub mod bridge;
 pub mod store;
+pub mod updater;
 
 use std::net::TcpStream;
 use std::path::PathBuf;
@@ -22,9 +24,16 @@ fn data_dir() -> PathBuf {
         .unwrap_or_else(|_| store::default_data_dir())
 }
 
-fn boot(dir: PathBuf, public: PathBuf) -> Result<(), String> {
+fn boot(
+    dir: PathBuf,
+    public: PathBuf,
+    shell: Option<(tauri::AppHandle, bool)>,
+) -> Result<(), String> {
     let store = store::Store::open(&dir)?;
     let state = Arc::new(api::AppState::new(store));
+    if let Some((handle, updater_ready)) = shell {
+        state.updater.attach(handle, updater_ready);
+    }
     let app = api::router(state, public.clone());
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -44,7 +53,7 @@ pub fn run() {
         || std::env::var("WL_HEADLESS").is_ok();
 
     if headless {
-        if let Err(e) = boot(data_dir(), public_dir()) {
+        if let Err(e) = boot(data_dir(), public_dir(), None) {
             eprintln!("wavelength core: {e}");
             std::process::exit(1);
         }
@@ -54,7 +63,17 @@ pub fn run() {
     let dev_public = public_dir();
     let dev_data = data_dir();
 
-    tauri::Builder::default()
+    // The updater plugin refuses to start without a public key, so it is only
+    // registered when tauri.conf.json has one (release builds). A local build
+    // without a key simply reports "Updates are not set up in this build".
+    let context = tauri::generate_context!();
+    let updater_ready = updater::configured(context.config());
+    let mut builder = tauri::Builder::default();
+    if updater_ready {
+        builder = builder.plugin(tauri_plugin_updater::Builder::new().build());
+    }
+
+    builder
         .setup(move |app| {
             use tauri::Manager;
             let data = app
@@ -71,8 +90,9 @@ pub fn run() {
 
             let public_for_server = public.clone();
             let handle = app.handle().clone();
+            let shell = (app.handle().clone(), updater_ready);
             std::thread::spawn(move || {
-                if let Err(e) = boot(data, public_for_server) {
+                if let Err(e) = boot(data, public_for_server, Some(shell)) {
                     eprintln!("wavelength core: {e}");
                     handle.exit(1);
                 }
@@ -101,6 +121,6 @@ pub fn run() {
             .build()?;
             Ok(())
         })
-        .run(tauri::generate_context!())
+        .run(context)
         .expect("error while running Wavelength");
 }

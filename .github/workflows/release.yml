@@ -1,0 +1,128 @@
+name: Release
+# Push a tag like v2.9.1 (after `npm run version:bump 2.9.1`) and this builds, signs and publishes
+# installers plus latest.json, which installed apps read to update themselves.
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  verify:
+    runs-on: ubuntu-22.04
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 20 }
+      - id: v
+        run: |
+          VERSION=$(node -p "require('./package.json').version")
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          if [ "${GITHUB_REF_TYPE}" = "tag" ] && [ "${GITHUB_REF_NAME}" != "v$VERSION" ]; then
+            echo "::error::Tag ${GITHUB_REF_NAME} does not match package.json version $VERSION. Run: npm run version:bump X.Y.Z"; exit 1
+          fi
+          for f in src-tauri/tauri.conf.json; do
+            node -e "const c=require('./$f');if(c.version!=='$VERSION'){console.error('$f version '+c.version+' != $VERSION');process.exit(1)}"
+          done
+          grep -q "^version = \"$VERSION\"" src-tauri/Cargo.toml || { echo "::error::Cargo.toml version is not $VERSION"; exit 1; }
+      - name: Updater key and secrets present
+        env:
+          KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+        run: |
+          [ -n "$KEY" ] || { echo "::error::Add the TAURI_SIGNING_PRIVATE_KEY secret (see UPDATES.md)"; exit 1; }
+          node -e "const k=((require('./src-tauri/tauri.conf.json').plugins||{}).updater||{}).pubkey||'';if(k.length<40){console.error('tauri.conf.json plugins.updater.pubkey is empty. Run: node scripts/setup-github.js OWNER/REPO key.pub');process.exit(1)}"
+      - name: Release notes from CHANGELOG.md
+        run: node scripts/release-notes.js "${{ steps.v.outputs.version }}" > release-notes.md
+      - uses: actions/upload-artifact@v4
+        with: { name: release-notes, path: release-notes.md }
+
+  build:
+    needs: verify
+    strategy:
+      fail-fast: false
+      # One at a time: every job merges its platform into the same latest.json.
+      max-parallel: 1
+      matrix:
+        include:
+          - { os: macos-latest,      args: '--target universal-apple-darwin', targets: 'aarch64-apple-darwin,x86_64-apple-darwin' }
+          - { os: windows-latest,    args: '', targets: '' }
+          - { os: ubuntu-22.04,      args: '', targets: '' }
+          - { os: ubuntu-22.04-arm,  args: '', targets: '' }
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with: { name: release-notes }
+      - uses: actions/setup-node@v4
+        with: { node-version: 20 }
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.targets }}
+      - uses: swatinem/rust-cache@v2
+        with: { workspaces: src-tauri }
+      - name: Linux build dependencies
+        if: startsWith(matrix.os, 'ubuntu')
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libasound2-dev pkg-config
+      - run: npm install
+      - id: notes
+        shell: bash
+        run: |
+          { echo 'body<<EOF_NOTES'; cat release-notes.md; echo; echo 'EOF_NOTES'; } >> "$GITHUB_OUTPUT"
+      - uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        with:
+          tagName: v${{ needs.verify.outputs.version }}
+          releaseName: Wavelength ${{ needs.verify.outputs.version }}
+          releaseBody: ${{ steps.notes.outputs.body }}
+          releaseDraft: true
+          prerelease: false
+          includeUpdaterJson: true
+          args: --config src-tauri/tauri.release.conf.json ${{ matrix.args }}
+
+  # The Flatpak bundles its own yt-dlp and ffmpeg, so it is packaged separately
+  # from the AppImage/deb that tauri-action produces.
+  flatpak:
+    needs: [verify, build]
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 20 }
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: swatinem/rust-cache@v2
+        with: { workspaces: src-tauri }
+      - name: Build and Flatpak dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev \
+            patchelf libasound2-dev pkg-config flatpak flatpak-builder
+          flatpak remote-add --user --if-not-exists flathub \
+            https://dl.flathub.org/repo/flathub.flatpakrepo
+      - run: npm install
+      - name: Build the Linux binary
+        run: npx tauri build --no-bundle
+      - name: Package the Flatpak
+        run: bash scripts/build-flatpak.sh
+      - name: Attach the Flatpak to the release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release upload "v${{ needs.verify.outputs.version }}" dist/*.flatpak --clobber
+
+  publish:
+    needs: [verify, build, flatpak]
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Publish the release (installed apps see it only now)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release edit "v${{ needs.verify.outputs.version }}" --repo "$GITHUB_REPOSITORY" --draft=false --latest

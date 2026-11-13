@@ -1,6 +1,6 @@
 # Wavelength Tauri port — progress snapshot
 
-Snapshot date: 2026-11-11. The original app in `../wavelength` is untouched.
+Snapshot date: 2026-11-13 (2.9.0: Minecraft game link + GitHub updates). The original app in `../wavelength` is untouched.
 
 ## What works now
 
@@ -41,8 +41,9 @@ npm test
   progress, Opus/WebM, live rate changes, system Now Playing/media keys, and
   the native update channel. Details and priorities are in `PORTING.md`.
 - Android is still the Kotlin/Media3 app; the Tauri port is desktop only.
-- The Minecraft mod compatibility and the alternative music platform are both
-  still waiting on scope details.
+- The alternative music platform is still waiting on scope details.
+- **2.9.0 was written without a Rust toolchain**, so `bridge.rs` and `updater.rs` have not been compiled or
+  run. See HANDOFF.md for the first-run checklist.
 
 ## Build a macOS app
 

@@ -1,75 +1,58 @@
-# In-app updates
+# Updates from GitHub
 
-Wavelength can update its interface and player without a new installer. An update is a small signed bundle
-of `public/`, `server.js`, `discord-rpc.js`, `updater.js` and `package.json`. Apps verify the signature,
-unpack the bundle into their data folder and use it from the next start. If a new version fails to start,
-the next launch quietly goes back to the version that came with the installer.
+Installed apps update themselves from GitHub Releases. **Settings → Updates** checks on launch (at most every
+12 hours), downloads the signed bundle in the background and shows **Restart now**. Nothing is installed until
+you restart, and the signature is checked before anything is touched.
+
+How it fits together:
+
+    git tag v2.9.1 && git push --tags
+      → .github/workflows/release.yml builds macOS (universal), Windows, Linux x64 and Linux arm64,
+        signs each updater bundle, packages a Flatpak (with yt-dlp and ffmpeg bundled), uploads
+        installers and latest.json to a draft release, then publishes it
+      → installed apps read  https://github.com/OWNER/REPO/releases/latest/download/latest.json
+        and install the bundle for their platform if the version is newer
 
 ## One-time setup
 
-1. `npm run make:update:init` creates your signing key pair (ECDSA P-256).
-   - The **private** key goes to `~/.wavelength/update-private.pem` (mode 0600). Back it up somewhere safe
-     and never commit it. If it is lost, installed apps reject later updates and everyone needs one more
-     installer; if it leaks, someone else can sign an update your apps will trust.
-   - The **public** key is written to `update-pubkey.pem` in the repo root. Commit it. It is embedded in
-     every installer and in the Android APK.
-2. Build and publish new installers and the APK **once**. They now contain the public key, and
-   Settings → Updates stops saying "Updates are not set up in this build". **Overhaul 2.7.2** is the
-   first build with the key; 2.7.1 and earlier need that installer once.
+1. **Create the signing key.** Keep the private half secret; losing it means installed apps will refuse every
+   later update.
 
-There is no account or external service: the key pair is generated locally and only the public half is
-published.
+       npx tauri signer generate -w ~/.tauri/wavelength.key
 
-## The Overhaul channel
+2. **Put the public key and your repository in the app.**
 
-The updater downloads `update.json` from a fixed channel release, not from whichever release GitHub calls
-latest:
+       node scripts/setup-github.js OWNER/REPO ~/.tauri/wavelength.key.pub
 
-    https://github.com/thegoldertrone7-cyber/wavelength/releases/download/overhaul-updates/update.json
+   This edits `src-tauri/tauri.conf.json` (`plugins.updater.endpoints` and `.pubkey`). Commit it. The default
+   repository there is `thegoldertrone7-cyber/wavelength-tauri`; change it if yours differs.
+3. **Add two repository secrets** (Settings → Secrets and variables → Actions):
+   `TAURI_SIGNING_PRIVATE_KEY` (the *contents* of `wavelength.key`) and `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`
+   (the password you chose; leave empty if none).
+4. Settings → Actions → General → Workflow permissions: **Read and write**.
 
-`overhaul-updates` is a permanent, prerelease-marked release. Its `update.json` and
-`wavelength-update.tar.gz` assets are replaced on every Overhaul release, so the URL never changes and
-Overhaul builds never read the stable v2.4.1 channel. Keep the release (and its tag) in place; deleting it
-breaks the updater for every installed build.
-
-To follow `releases/latest/download` instead, build with `WAVELENGTH_UPDATE_CHANNEL=latest` or start the
-app with `WAVELENGTH_UPDATE_URL` pointing at another manifest. The Android app uses the Overhaul channel
-(`WebUpdater.java`); rebuild the APK after changing it.
+Until step 2 is done the updater stays off: the app runs normally and Settings → Updates says
+"Updates are not set up in this build". The release workflow refuses to run without the key, so you cannot
+publish a release that nobody can install.
 
 ## Shipping an update
 
-1. Bump `version` in `package.json`.
-2. `npm run make:update -- --notes "What changed"` writes `dist-update/update.json` and
-   `dist-update/wavelength-update.tar.gz`.
-3. Upload both files to the **overhaul-updates** release, replacing the previous pair:
+    npm run version:bump 2.9.1      # package.json, tauri.conf.json, Cargo.toml, Cargo.lock, api.rs
+    # add "## 2.9.1" to CHANGELOG.md (it becomes the release notes shown in Settings → Updates)
+    git commit -am "2.9.1" && git tag v2.9.1 && git push && git push --tags
 
-       gh release upload overhaul-updates dist-update/update.json dist-update/wavelength-update.tar.gz --clobber
+The workflow checks that the tag, `package.json`, `tauri.conf.json` and `Cargo.toml` agree before building.
+Builds run one platform at a time on purpose, because each one merges itself into the same `latest.json`.
+The first release after setup has to be installed by hand; every later one arrives in-app.
 
-4. Apps notice the new `update.json` on their next check (on launch, then at most every 12 hours) or when
-   the user presses **Check now** in Settings → Updates. The bundle is verified, staged, and applied after
-   **Restart now**.
+## Notes
 
-Every release does not need a new installer: the bundle carries the web layer. But the installer and the
-versioned release still matter for new users and for native changes.
-
-Use `--min-shell X.Y.Z` when a change needs a newer installer (new Electron code or new Android Java).
-Apps older than that show "Get installer" instead of installing the bundle.
-
-## Release checklist
-
-1. Bump the version, update the docs, commit and push.
-2. Build and publish the installers and APK as usual.
-3. `npm run make:update -- --notes "..."` (add `--min-shell` if the native shell changed).
-4. Replace the two assets on the `overhaul-updates` release.
-5. Confirm with `curl -L https://github.com/thegoldertrone7-cyber/wavelength/releases/download/overhaul-updates/update.json`
-   that the version and notes are the new ones.
-
-## Limits
-
-- Installed versions that were built before this feature (or without `update-pubkey.pem`), including
-  2.7.1 and earlier, cannot update themselves. They need one last installer; after that updates are
-  in-app.
-- Anything inside the native shell (`electron/`, `scripts/android/*.java`, permissions) still ships through
-  an installer.
-- Android applies an update after you tap Restart in Settings → Updates (the page reloads); desktop
-  relaunches.
+- **Windows**: the installer runs in passive mode and closes the app while it installs, then starts it again.
+- **macOS**: the app bundle is replaced in place, so Wavelength must live somewhere you can write to
+  (`/Applications` is fine for the user who installed it). Builds are unsigned unless you add Apple
+  certificates to the workflow, so the first launch needs right-click → Open.
+- **Linux**: in-app updates work for the AppImage. `.deb`/`.rpm`/Flatpak installs update through their own
+  channels.
+- **Android** is the separate Kotlin app and keeps its own update channel.
+- Do not run `cargo` with `--locked` until you have committed the `Cargo.lock` that the first build produces
+  (this release added the updater plugin's dependencies).

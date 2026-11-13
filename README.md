@@ -42,21 +42,35 @@ styles, undo and filtering, queue tools, sleep timer).
 The macOS and Windows builds are unsigned, so the first launch shows the usual warning. Installation
 details, sync steps and limits are in [DOWNLOADS.md](DOWNLOADS.md).
 
+## Minecraft: Wavelength Link (built in)
+
+This build has the game link for the [Wavelength Link](https://github.com/thegoldertrone7-cyber/wavelength-link)
+mod (NeoForge 1.21.1) built into the Rust core. There is nothing to patch or switch on: start Wavelength, play
+something, join a world. The mod finds the app on `127.0.0.1:47823` and shows the track, artwork, your theme and
+a live level meter, and its keys control playback in milliseconds.
+
+- Position, play state and levels come from the native audio engine, so they stay correct even when the window
+  is in the background.
+- Only this computer and this app's own page can use the link. Web pages in your browser cannot read what is
+  playing or skip tracks.
+- Keep the Wavelength window open (it may be behind the game). The page supplies track, theme and like state
+  and runs the commands; the mod shows a hint if it stops answering.
+- Protocol and design: `src-tauri/src/bridge.rs`, `public/js/bridge.js`.
+
 ## Desktop app (macOS / Windows / Linux)
 
-You need Node.js, yt-dlp and ffmpeg (which includes ffprobe). macOS:  `brew install node yt-dlp ffmpeg`
+You need Node.js, Rust, yt-dlp and ffmpeg (which includes ffprobe). macOS:  `brew install node yt-dlp ffmpeg`
 
-    npm install          # downloads Electron (~100 MB, once)
-    npm run app          # opens Wavelength as a real app window
+    npm install
+    npm run dev          # opens the app with hot reload
 
-Build an installable app (run it on the OS you are building for):
+Build installable packages (run it on the OS you are building for):
 
-    npm run dist:mac     # -> dist/Wavelength-*.dmg
-    npm run dist:win     # -> dist/Wavelength Setup *.exe   (run on Windows)
-    npm run dist:linux   # -> dist/Wavelength-*.AppImage    (run on Linux)
-    bash scripts/build-flatpak.sh   # -> dist/Wavelength-*-x86_64.flatpak (Linux)
+    npm run build                    # -> src-tauri/target/release/bundle/
+    bash scripts/build-flatpak.sh    # -> dist/Wavelength-<version>-<arch>.flatpak  (on Linux)
 
-The desktop packages and Flatpak are also built by GitHub Actions on every push to `main`.
+The Tauri bundles for macOS, Windows, Linux x64 and Linux arm64, plus the Flatpak, are built and
+published by GitHub Actions when a `v*` tag is pushed (see `UPDATES.md`).
 Each release page lists the installation files included; v2.4.1 and the separate Overhaul 2.7.2
 release each ship macOS, Windows, Linux and Android together.
 
@@ -262,3 +276,8 @@ Streaming and downloading from YouTube is against YouTube's terms. Personal use 
 - Hide/remove individual visualizer styles.
 - Android: pin a playlist to the home screen, lock-screen hierarchy, and extra Android lag work (e.g. lighter blur). Android code in this version is untested (no APK build here).
 - Discord support, daily/cross-device sync features, and a Rust rewrite.
+
+## Updates
+
+Releases are built and signed by GitHub Actions and installed apps update themselves from them. Setup and the
+release routine are in [UPDATES.md](UPDATES.md); changes per version are in [CHANGELOG.md](CHANGELOG.md).

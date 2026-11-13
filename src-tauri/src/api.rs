@@ -21,7 +21,7 @@ use tower_http::services::{ServeDir, ServeFile};
 
 pub const BASE_URL: &str = "http://127.0.0.1:47823";
 pub const LAN_PORT: u16 = 47824;
-pub const VERSION: &str = "2.8.0-tauri";
+pub const VERSION: &str = "2.9.0-tauri";
 
 pub struct AppState {
     pub store: Arc<Store>,
@@ -30,6 +30,10 @@ pub struct AppState {
     pub info_cache: Mutex<HashMap<String, (Instant, Value)>>,
     pub stream_cache: Mutex<HashMap<String, (Instant, String)>>,
     pub lan_started: Mutex<bool>,
+    /// Native game link for the Wavelength Link Minecraft mod.
+    pub bridge: crate::bridge::Bridge,
+    /// In-app updates from GitHub Releases.
+    pub updater: crate::updater::Updates,
 }
 
 impl AppState {
@@ -42,6 +46,8 @@ impl AppState {
             info_cache: Mutex::new(HashMap::new()),
             stream_cache: Mutex::new(HashMap::new()),
             lan_started: Mutex::new(false),
+            bridge: crate::bridge::Bridge::new(),
+            updater: crate::updater::Updates::new(),
         }
     }
 }
@@ -89,7 +95,6 @@ pub fn router(state: Arc<AppState>, public_dir: PathBuf) -> Router {
         .route("/api/discord", post(discord))
         .route("/api/spotify-url", post(spotify_stub))
         .route("/api/spotify/{*rest}", any(spotify_stub))
-        .route("/api/update/{*rest}", any(update_stub))
         .route("/api/sync/status", get(sync_status))
         .route("/api/sync/host", post(sync_host))
         .route("/api/sync/join", post(sync_join))
@@ -107,6 +112,8 @@ pub fn router(state: Arc<AppState>, public_dir: PathBuf) -> Router {
         .route("/api/audio/status", get(audio_status))
         .route("/api/audio/spectrum", get(audio_spectrum))
         .route("/api/audio/{action}", post(audio_action))
+        .merge(crate::bridge::routes())
+        .merge(crate::updater::routes())
         .with_state(state);
 
     Router::new()
@@ -1121,17 +1128,6 @@ async fn discord() -> Json<Value> {
 
 async fn spotify_stub() -> Json<Value> {
     Json(json!({ "ok": false, "error": "Spotify import is only available in the web build" }))
-}
-
-async fn update_stub() -> Json<Value> {
-    Json(json!({
-        "ok": true,
-        "native": true,
-        "available": false,
-        "current": VERSION,
-        "latest": VERSION,
-        "status": "Native build — updates ship with the app"
-    }))
 }
 
 /* ───────────────────────── native audio ───────────────────────── */
