@@ -21,7 +21,10 @@ use tower_http::services::{ServeDir, ServeFile};
 
 pub const BASE_URL: &str = "http://127.0.0.1:47823";
 pub const LAN_PORT: u16 = 47824;
-pub const VERSION: &str = "2.9.0-tauri";
+/// UDP port the Android app broadcasts `WAVELENGTH_DISCOVER_V1` on.
+pub const DISCOVERY_PORT: u16 = 38423;
+const DISCOVERY_PROBE: &[u8] = b"WAVELENGTH_DISCOVER_V1";
+pub const VERSION: &str = "2.9.1-tauri";
 
 pub struct AppState {
     pub store: Arc<Store>,
@@ -30,6 +33,7 @@ pub struct AppState {
     pub info_cache: Mutex<HashMap<String, (Instant, Value)>>,
     pub stream_cache: Mutex<HashMap<String, (Instant, String)>>,
     pub lan_started: Mutex<bool>,
+    pub discovery_started: Mutex<bool>,
     /// Native game link for the Wavelength Link Minecraft mod.
     pub bridge: crate::bridge::Bridge,
     /// In-app updates from GitHub Releases.
@@ -46,6 +50,7 @@ impl AppState {
             info_cache: Mutex::new(HashMap::new()),
             stream_cache: Mutex::new(HashMap::new()),
             lan_started: Mutex::new(false),
+            discovery_started: Mutex::new(false),
             bridge: crate::bridge::Bridge::new(),
             updater: crate::updater::Updates::new(),
         }
@@ -104,7 +109,7 @@ pub fn router(state: Arc<AppState>, public_dir: PathBuf) -> Router {
         .route("/api/sync/push", post(sync_push))
         .route("/api/sync/pull", post(sync_pull))
         .route("/api/sync/remote", post(sync_remote))
-        .route("/api/sync/find", get(|| async { Json(json!({ "hosts": [] })) }))
+        .route("/api/sync/find", get(sync_find))
         .route("/api/sync/folder", get(folder_status).post(folder_status))
         .route("/api/sync/folder/merge", post(empty_ok))
         .route("/api/sync/merge", post(sync_merge))
@@ -1188,9 +1193,15 @@ async fn audio_action(
 
 async fn sync_status(State(st): State<Arc<AppState>>) -> Json<Value> {
     let mut meta = st.store.sync_meta();
-    if meta.get("role").and_then(|v| v.as_str()) == Some("host") {
-        meta["hostUrl"] = json!(format!("http://{}:{}", local_ip(), LAN_PORT));
+    let hosting = meta.get("role").and_then(Value::as_str) == Some("host");
+    let urls = if hosting { sync_urls() } else { Vec::new() };
+    if let Some(first) = urls.first() {
+        meta["hostUrl"] = json!(first);
     }
+    meta["port"] = json!(LAN_PORT);
+    meta["discoveryPort"] = json!(DISCOVERY_PORT);
+    meta["urls"] = json!(urls);
+    meta["device"] = json!(hostname());
     meta["listening"] = st
         .store
         .state()
@@ -1208,13 +1219,25 @@ fn gen_code() -> String {
         .unwrap_or(0);
     let seed = std::process::id() as u64 * 1_000_003 + nanos as u64;
     let mut x = seed;
-    let mut s = String::new();
+    let mut s = String::with_capacity(8);
     for _ in 0..8 {
         x ^= x >> 33;
         x = x.wrapping_mul(0xff51afd7ed558ccd);
-        s.push(char::from(b'0' + (x % 36) as u8).to_ascii_uppercase());
+        x ^= x >> 33;
+        s.push(char::from(b"0123456789ABCDEF"[(x & 0xf) as usize]));
     }
     s
+}
+
+/// Match the old server and the Android client: codes are uppercase letters
+/// and digits only, so punctuation typed by hand never breaks pairing.
+fn clean_code(value: &str) -> String {
+    value
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric())
+        .take(24)
+        .collect::<String>()
+        .to_ascii_uppercase()
 }
 
 async fn sync_host(State(st): State<Arc<AppState>>) -> ApiResult<Json<Value>> {
@@ -1226,9 +1249,13 @@ async fn sync_host(State(st): State<Arc<AppState>>) -> ApiResult<Json<Value>> {
         meta["code"] = json!(gen_code());
     }
     meta["rev"] = json!(st.store.bump_rev());
-    meta["hostUrl"] = json!(format!("http://{}:{}", local_ip(), LAN_PORT));
-    st.store.set_sync_meta(meta.clone());
-    Ok(Json(meta))
+    meta["hostUrl"] = json!(sync_urls()
+        .into_iter()
+        .next()
+        .unwrap_or_else(|| format!("http://127.0.0.1:{LAN_PORT}")));
+    meta["port"] = json!(LAN_PORT);
+    st.store.set_sync_meta(meta);
+    Ok(Json(sync_status(State(st)).await.0))
 }
 
 #[derive(Deserialize)]
@@ -1412,7 +1439,69 @@ async fn sync_preview(State(st): State<Arc<AppState>>) -> Json<Value> {
 
 /* ───────────────────────── LAN host ───────────────────────── */
 
+/// Answer UDP probes while hosting so "Find devices" works without typing an IP.
+fn start_lan_discovery(st: Arc<AppState>) {
+    {
+        let mut started = match st.discovery_started.lock() {
+            Ok(s) => s,
+            Err(_) => return,
+        };
+        if *started {
+            return;
+        }
+        *started = true;
+    }
+    std::thread::spawn(move || {
+        let sock = match std::net::UdpSocket::bind((
+            std::net::Ipv4Addr::UNSPECIFIED,
+            DISCOVERY_PORT,
+        )) {
+            Ok(s) => s,
+            Err(_) => return,
+        };
+        let _ = sock.set_broadcast(true);
+        let mut buf = [0u8; 128];
+        loop {
+            let Ok((n, from)) = sock.recv_from(&mut buf) else {
+                continue;
+            };
+            if n < DISCOVERY_PROBE.len() || n > 64 {
+                continue;
+            }
+            if &buf[..DISCOVERY_PROBE.len()] != DISCOVERY_PROBE {
+                continue;
+            }
+            let meta = st.store.sync_meta();
+            if meta.get("role").and_then(Value::as_str) != Some("host") {
+                continue;
+            }
+            if !meta.get("enabled").and_then(Value::as_bool).unwrap_or(false) {
+                continue;
+            }
+            let reply = json!({
+                "app": "wavelength",
+                "name": hostname(),
+                "version": VERSION,
+                "port": LAN_PORT,
+                "rev": meta.get("rev").and_then(Value::as_i64).unwrap_or(0),
+            });
+            let _ = sock.send_to(reply.to_string().as_bytes(), from);
+        }
+    });
+}
+
+/// Restart hosting (and discovery) when the app reopens after a crash/quit.
+pub fn resume_sync_host(st: Arc<AppState>) {
+    let meta = st.store.sync_meta();
+    if meta.get("role").and_then(Value::as_str) == Some("host")
+        && meta.get("enabled").and_then(Value::as_bool).unwrap_or(false)
+    {
+        start_lan_host(st);
+    }
+}
+
 fn start_lan_host(st: Arc<AppState>) {
+    start_lan_discovery(st.clone());
     let mut started = match st.lan_started.lock() {
         Ok(s) => s,
         Err(_) => return,
@@ -1428,11 +1517,30 @@ fn start_lan_host(st: Arc<AppState>) {
             Err(_) => return,
         };
         rt.block_on(async move {
+            // The Android client and older desktop builds talk to `/api/sync/*`
+            // with an `X-Wavelength-Sync` header; the native guest uses the
+            // short `/sync/*` paths. Serve both so either can pair.
             let app = Router::new()
                 .route("/sync/status", get(lan_status))
+                .route("/api/sync/info", get(lan_status))
+                .route("/sync/info", get(lan_status))
                 .route("/sync/library", get(lan_library_get).put(lan_library_put))
+                .route(
+                    "/api/sync/library",
+                    get(lan_library_get).put(lan_library_put),
+                )
                 .route("/sync/listening", get(lan_listening_get).put(lan_listening_put))
-                .with_state(state.clone());
+                .route(
+                    "/api/sync/listening",
+                    get(lan_listening_get).put(lan_listening_put),
+                )
+                .route("/api/sync/preview", axum::routing::put(lan_preview))
+                .route("/sync/preview", axum::routing::put(lan_preview))
+                .route("/api/sync/now", post(lan_now))
+                .route("/sync/now", post(lan_now))
+                .with_state(state.clone())
+                .layer(DefaultBodyLimit::max(64 * 1024 * 1024))
+                .layer(CorsLayer::permissive());
             let listener = match tokio::net::TcpListener::bind(("0.0.0.0", LAN_PORT)).await {
                 Ok(l) => l,
                 Err(_) => return,
@@ -1443,30 +1551,38 @@ fn start_lan_host(st: Arc<AppState>) {
 }
 
 fn authorized(st: &AppState, headers: &HeaderMap, query: &HashMap<String, String>) -> bool {
-    let code = st
-        .store
-        .sync_meta()
-        .get("code")
-        .and_then(|v| v.as_str())
-        .unwrap_or("")
-        .to_string();
+    let code = clean_code(
+        st.store
+            .sync_meta()
+            .get("code")
+            .and_then(|v| v.as_str())
+            .unwrap_or(""),
+    );
     if code.is_empty() {
         return true;
     }
-    let given = headers
-        .get("x-wl-code")
-        .and_then(|v| v.to_str().ok())
-        .map(|s| s.to_string())
+    let header_code = |name: &str| {
+        headers
+            .get(name)
+            .and_then(|v| v.to_str().ok())
+            .map(|s| s.to_string())
+    };
+    let given = header_code("x-wl-code")
+        .or_else(|| header_code("x-wavelength-sync"))
         .or_else(|| query.get("code").cloned())
         .unwrap_or_default();
-    given.eq_ignore_ascii_case(&code)
+    clean_code(&given) == code
 }
 
 async fn lan_status(State(st): State<Arc<AppState>>) -> Json<Value> {
     let meta = st.store.sync_meta();
     Json(json!({
         "ok": true,
+        "app": "wavelength",
+        "name": hostname(),
         "host": hostname(),
+        "version": VERSION,
+        "port": LAN_PORT,
         "rev": meta.get("rev").cloned().unwrap_or(json!(0)),
         "merge": true,
         "listening": true
@@ -1483,6 +1599,7 @@ async fn lan_library_get(
     }
     let meta = st.store.sync_meta();
     Ok(Json(json!({
+        "ok": true,
         "library": st.store.state(),
         "rev": meta.get("rev").cloned().unwrap_or(json!(0)),
         "host": hostname(),
@@ -1500,11 +1617,98 @@ async fn lan_library_put(
         return Err(ApiError(StatusCode::UNAUTHORIZED, "Wrong sync code".into()));
     }
     let value: Value = serde_json::from_slice(&body).map_err(|e| bad(e.to_string()))?;
-    let incoming = value.get("library").cloned().unwrap_or(Value::Null);
-    let merged = merge_library_state(&st.store.state(), &incoming);
-    st.store.write_state(merged).map_err(bad)?;
+    let incoming = value.get("library").cloned().unwrap_or_else(|| value.clone());
+    let mode = q
+        .get("mode")
+        .cloned()
+        .or_else(|| {
+            headers
+                .get("x-wavelength-sync-mode")
+                .and_then(|v| v.to_str().ok())
+                .map(|s| s.to_string())
+        })
+        .unwrap_or_default();
+    let mut next = if mode == "merge" {
+        merge_library_state(&st.store.state(), &incoming)
+    } else {
+        // Plain PUT replaces the shared library, matching the old host and the
+        // "Send changes" / "Pull" wording in the UI.
+        let mut state = st.store.state();
+        if !state.is_object() {
+            state = json!({});
+        }
+        if let Some(obj) = state.as_object_mut() {
+            for key in ["playlists", "liked", "history"] {
+                if let Some(field) = incoming.get(key) {
+                    obj.insert(key.to_string(), field.clone());
+                }
+            }
+        }
+        state
+    };
+    if let (Some(obj), Some(listening)) = (next.as_object_mut(), incoming.get("listening")) {
+        if !listening.is_null() {
+            let merged = merge_listening(obj.get("listening").unwrap_or(&Value::Null), listening);
+            obj.insert("listening".into(), merged);
+        }
+    }
+    st.store.write_state(next.clone()).map_err(bad)?;
     let rev = st.store.bump_rev();
-    Ok(Json(json!({ "ok": true, "rev": rev, "host": hostname() })))
+    Ok(Json(json!({
+        "ok": true,
+        "rev": rev,
+        "host": hostname(),
+        "updatedAt": now_ms(),
+        "library": next
+    })))
+}
+
+async fn lan_preview(
+    State(st): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Query(q): Query<HashMap<String, String>>,
+    body: Bytes,
+) -> Result<Json<Value>, ApiError> {
+    if !authorized(&st, &headers, &q) {
+        return Err(ApiError(StatusCode::UNAUTHORIZED, "Wrong sync code".into()));
+    }
+    let value: Value = serde_json::from_slice(&body).unwrap_or_else(|_| json!({}));
+    let incoming = value.get("library").cloned().unwrap_or_else(|| value.clone());
+    let state = st.store.state();
+    let count = |v: &Value, key: &str| {
+        v.get(key)
+            .and_then(|x| x.as_array())
+            .map(|a| a.len())
+            .unwrap_or(0)
+    };
+    let device = value
+        .get("device")
+        .and_then(Value::as_str)
+        .unwrap_or("Device");
+    // The Android client tolerates a host that cannot preview; without a
+    // `selected` map it merges everything, which is the safe default.
+    Ok(Json(json!({
+        "ok": true,
+        "role": "guest",
+        "sources": [device],
+        "add": {
+            "playlists": count(&incoming, "playlists"),
+            "liked": count(&incoming, "liked"),
+            "history": count(&incoming, "history")
+        },
+        "removed": { "playlists": [], "songs": [], "liked": [] },
+        "counts": {
+            "playlists": count(&state, "playlists"),
+            "liked": count(&state, "liked"),
+            "history": count(&state, "history")
+        }
+    })))
+}
+
+async fn lan_now() -> Json<Value> {
+    // Now-playing relay is a desktop-only nicety; answer harmlessly so paired
+    // phones do not surface an error for it.
+    Json(json!({ "ok": true, "devices": [], "cmds": [] }))
 }
 
 async fn lan_listening_get(
@@ -1655,29 +1859,55 @@ fn remote_json(
         .timeout(Duration::from_secs(30))
         .build()
         .map_err(|e| e.to_string())?;
-    let url = format!("{base}{path}");
-    let mut req = match method {
-        "PUT" => client.put(&url),
-        "POST" => client.post(&url),
-        _ => client.get(&url),
-    };
-    if !code.is_empty() {
-        req = req.header("x-wl-code", code);
+    // The Tauri host serves short `/sync/*` paths; the old Node host and the
+    // Android client use `/api/sync/*`. Try both so either can be a host.
+    let mut paths = vec![path.to_string()];
+    if path.starts_with("/sync/") {
+        paths.push(format!("/api{path}"));
     }
-    if let Some(b) = body {
-        req = req.json(&b);
-    }
-    let resp = req.send().map_err(|e| e.to_string())?;
-    let status = resp.status();
-    let value: Value = resp.json().unwrap_or_else(|_| json!({}));
-    if !status.is_success() {
-        return Err(value
+    let mut last_error = String::from("Sync request failed");
+    let mut last_status = None;
+    for path in paths {
+        let url = format!("{base}{path}");
+        let mut req = match method {
+            "PUT" => client.put(&url),
+            "POST" => client.post(&url),
+            _ => client.get(&url),
+        };
+        if !code.is_empty() {
+            req = req
+                .header("x-wl-code", code)
+                .header("x-wavelength-sync", code);
+        }
+        if let Some(b) = &body {
+            req = req.json(b);
+        }
+        let resp = match req.send() {
+            Ok(resp) => resp,
+            Err(e) => {
+                last_error = e.to_string();
+                continue;
+            }
+        };
+        let status = resp.status();
+        let value: Value = resp.json().unwrap_or_else(|_| json!({}));
+        if status.is_success() {
+            return Ok(value);
+        }
+        last_status = Some(status);
+        last_error = value
             .get("error")
             .and_then(|v| v.as_str())
             .unwrap_or("Sync request failed")
-            .to_string());
+            .to_string();
+        if status != reqwest::StatusCode::NOT_FOUND {
+            break;
+        }
     }
-    Ok(value)
+    if last_status == Some(reqwest::StatusCode::NOT_FOUND) {
+        return Err("The host does not answer the sync API".into());
+    }
+    Err(last_error)
 }
 
 fn hostname() -> String {
@@ -1689,16 +1919,120 @@ fn hostname() -> String {
         .unwrap_or_else(|| "Wavelength".into())
 }
 
-fn local_ip() -> String {
-    let Ok(sock) = std::net::UdpSocket::bind("0.0.0.0:0") else {
-        return "127.0.0.1".into();
-    };
-    if sock.connect("8.8.8.8:80").is_err() {
-        return "127.0.0.1".into();
+/// Every non-loopback IPv4 address on this machine, as a sync URL.
+///
+/// Phones cannot guess the computer's address, so the host UI shows all of
+/// them and the UDP discovery reply points at the same port. Link-local
+/// (169.254.x.x) addresses are useless for sync, so they are skipped.
+fn sync_urls() -> Vec<String> {
+    let mut urls: Vec<String> = Vec::new();
+    if let Ok(interfaces) = if_addrs::get_if_addrs() {
+        for iface in interfaces {
+            let if_addrs::IfAddr::V4(v4) = iface.addr else {
+                continue;
+            };
+            if v4.ip.is_loopback() || v4.ip.is_link_local() || v4.ip.is_unspecified() {
+                continue;
+            }
+            let url = format!("http://{}:{}", v4.ip, LAN_PORT);
+            if !urls.contains(&url) {
+                urls.push(url);
+            }
+        }
     }
-    sock.local_addr()
-        .map(|a| a.ip().to_string())
-        .unwrap_or_else(|_| "127.0.0.1".into())
+    urls
+}
+
+/// Broadcast addresses to send a discovery probe to, including the global one.
+fn broadcast_addrs() -> Vec<std::net::Ipv4Addr> {
+    let mut out = vec![std::net::Ipv4Addr::new(255, 255, 255, 255)];
+    if let Ok(interfaces) = if_addrs::get_if_addrs() {
+        for iface in interfaces {
+            let if_addrs::IfAddr::V4(v4) = iface.addr else {
+                continue;
+            };
+            if v4.ip.is_loopback() || v4.ip.is_link_local() {
+                continue;
+            }
+            let broadcast = v4.broadcast.or_else(|| {
+                let ip = u32::from(v4.ip);
+                let mask = u32::from(v4.netmask);
+                Some(std::net::Ipv4Addr::from((ip & mask) | !mask))
+            });
+            if let Some(broadcast) = broadcast {
+                if !out.contains(&broadcast) {
+                    out.push(broadcast);
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Probe the local network for hosts answering the discovery broadcast.
+fn probe_sync_hosts(timeout: Duration) -> Vec<Value> {
+    let Ok(sock) = std::net::UdpSocket::bind((std::net::Ipv4Addr::UNSPECIFIED, 0)) else {
+        return Vec::new();
+    };
+    let _ = sock.set_broadcast(true);
+    let _ = sock.set_read_timeout(Some(Duration::from_millis(100)));
+    for addr in broadcast_addrs() {
+        let _ = sock.send_to(DISCOVERY_PROBE, (addr, DISCOVERY_PORT));
+    }
+    // A host on this same machine is not reached by broadcast on some systems.
+    let _ = sock.send_to(DISCOVERY_PROBE, (std::net::Ipv4Addr::LOCALHOST, DISCOVERY_PORT));
+
+    let start = Instant::now();
+    let mut found: Vec<Value> = Vec::new();
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut buf = [0u8; 2048];
+    while start.elapsed() < timeout {
+        let (n, from) = match sock.recv_from(&mut buf) {
+            Ok(v) => v,
+            Err(ref e)
+                if e.kind() == std::io::ErrorKind::WouldBlock
+                    || e.kind() == std::io::ErrorKind::TimedOut =>
+            {
+                continue
+            }
+            Err(_) => continue,
+        };
+        let Ok(value) = serde_json::from_slice::<Value>(&buf[..n]) else {
+            continue;
+        };
+        if value.get("app").and_then(Value::as_str) != Some("wavelength") {
+            continue;
+        }
+        let port = match value.get("port").and_then(Value::as_u64) {
+            Some(p) if p > 0 && p <= u16::MAX as u64 => p as u16,
+            _ => continue,
+        };
+        if !seen.insert(format!("{}:{}", from.ip(), port)) {
+            continue;
+        }
+        let fallback = from.ip().to_string();
+        found.push(json!({
+            "url": format!("http://{}:{}", from.ip(), port),
+            "name": value
+                .get("name")
+                .and_then(Value::as_str)
+                .filter(|s| !s.is_empty())
+                .unwrap_or(&fallback),
+            "version": value.get("version").and_then(Value::as_str).unwrap_or(""),
+        }));
+    }
+    found
+}
+
+async fn sync_find() -> Json<Value> {
+    let hosts = tokio::task::spawn_blocking(|| probe_sync_hosts(Duration::from_millis(1500)))
+        .await
+        .unwrap_or_default();
+    Json(json!({
+        "hosts": hosts,
+        "discoveryPort": DISCOVERY_PORT,
+        "port": LAN_PORT
+    }))
 }
 
 fn now_ms() -> i64 {

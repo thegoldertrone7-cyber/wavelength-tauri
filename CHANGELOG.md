@@ -1,5 +1,20 @@
 # Changelog
 
+## 2.9.1
+
+- **Device sync works again.** Hosting now lists every real network address (Wi-Fi, Ethernet, Tailscale)
+  instead of falling back to `127.0.0.1`, so the Devices panel no longer says "No network address found"
+  while the computer is online.
+- **Find devices works.** The Rust core answers the same UDP discovery probe on port 38423 as the old
+  server and advertises the sync port, so phones and other computers can find the host automatically.
+- **Older clients can pair.** The LAN server also serves the `/api/sync/*` paths and the
+  `X-Wavelength-Sync` header used by the Android app and earlier desktop builds, and returns the merged
+  library from a join.
+- **Pairing codes are letters and digits only.** The generator could emit punctuation, which the phone
+  stripped, making a correct code look wrong.
+- Hosting resumes automatically when the app reopens, and the desktop "Find devices" button probes the
+  network instead of always returning nothing.
+
 ## 2.9.0
 
 - **Minecraft, built in.** The Rust core now answers the Wavelength Link mod's `/api/bridge/*` link itself, so

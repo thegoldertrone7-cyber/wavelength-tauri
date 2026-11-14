@@ -1,6 +1,6 @@
 [package]
 name = "wavelength"
-version = "2.9.0"
+version = "2.9.1"
 description = "Wavelength desktop core"
 authors = ["Wavelength"]
 edition = "2021"
@@ -29,6 +29,7 @@ rusqlite = { version = "0.41", features = ["bundled"] }
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
 rodio = { version = "0.23", default-features = false, features = ["playback", "mp3", "mp4", "vorbis", "wav", "flac"] }
 rustfft = "6"
+if-addrs = "0.14"
 
 [features]
 default = ["custom-protocol"]

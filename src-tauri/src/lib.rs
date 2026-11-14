@@ -31,6 +31,7 @@ fn boot(
 ) -> Result<(), String> {
     let store = store::Store::open(&dir)?;
     let state = Arc::new(api::AppState::new(store));
+    api::resume_sync_host(state.clone());
     if let Some((handle, updater_ready)) = shell {
         state.updater.attach(handle, updater_ready);
     }
