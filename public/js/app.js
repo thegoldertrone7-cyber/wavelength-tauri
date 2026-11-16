@@ -982,11 +982,12 @@ async function lyricsLoad(refresh) {
    and the per-song timing nudge. */
 function lyrFooter(d, label) {
   const key = R.lyr.key, v = lyrUserOffset(key), synced = !!(d.synced && d.synced.length);
+  const has = synced || !!d.plain || !!d.instrumental;
   const m = d.matched && (d.matched.track || d.matched.artist)
     ? `<div class="lyr-match">Matched ${esc(d.matched.track || '')}${d.matched.artist ? ' — ' + esc(d.matched.artist) : ''}${d.matched.duration ? ` · ${Math.floor(d.matched.duration / 60)}:${String(Math.round(d.matched.duration % 60)).padStart(2, '0')}` : ''}</div>`
     : '';
   return `<div class="lyr-foot">
-    <span class="lyr-src">${esc(label)}${d.cached ? ' · saved offline' : ''}</span>
+    <span class="lyr-src">${esc(label)}${d.cached && has ? ' · saved offline' : ''}</span>
     ${synced ? `<span class="lyr-offset" role="group" aria-label="Lyrics timing">
       <button class="lyr-ob" data-act="lyr-off" data-d="-0.25" aria-label="Lyrics a quarter second earlier" title="Earlier">−</button>
       <span class="lyr-ov${v ? ' changed' : ''}" id="lyr-ov" title="Timing for this song">${LY.formatOffset ? LY.formatOffset(v) : '0.00s'}</span>
@@ -1265,6 +1266,10 @@ function afterSongEdit() {
   saveNow(); drawSide(); saveSession(true);
   if (R.cur) { uiNow(); mediaSession(); }
   renderQueue(); hl();
+  /* New details mean a new lyrics search: the old answer may belong to the old
+     title. Drop the memory cache and, if the panel is open, look again now. */
+  R.lyrCache.clear();
+  if (R.lyr.on && R.cur) lyricsLoad(true);
   if (curRoute === 'search') { const root = $('#sr'); if (root && R.results.length) root.innerHTML = searchHTML(R.results); observeRows(); }
   else draw();
 }

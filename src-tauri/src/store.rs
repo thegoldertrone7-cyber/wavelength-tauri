@@ -301,34 +301,61 @@ pub fn default_data_dir() -> PathBuf {
 pub fn legacy_data_dirs() -> Vec<PathBuf> {
     let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
     let home = PathBuf::from(home);
-    let mut dirs = Vec::new();
     if cfg!(target_os = "windows") {
-        if let Ok(appdata) = std::env::var("APPDATA") {
-            let base = PathBuf::from(appdata);
-            for name in ["Wavelength", "app.wavelength.music.tauri"] {
-                dirs.push(base.join(name));
+        let base = std::env::var("APPDATA")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| home.join("AppData/Roaming"));
+        return [base.join("Wavelength"), base.join("app.wavelength.music.tauri")].to_vec();
+    }
+    if cfg!(target_os = "macos") {
+        let base = home.join("Library/Application Support");
+        return [base.join("Wavelength"), base.join("app.wavelength.music.tauri")].to_vec();
+    }
+    let base = std::env::var("XDG_DATA_HOME")
+        .ok()
+        .filter(|s| !s.is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| home.join(".local/share"));
+    linux_legacy_dirs(&home, &base)
+}
+
+/// The user's real home, even inside a Flatpak sandbox where `$HOME` points at
+/// `~/.var/app/<app-id>` instead.
+fn real_home(home: &Path) -> &Path {
+    let mut parts = home.components().rev();
+    if let (Some(_id), Some(app), Some(var)) = (parts.next(), parts.next(), parts.next()) {
+        if app.as_os_str() == "app" && var.as_os_str() == ".var" {
+            if let Some(rest) = home.ancestors().nth(3) {
+                return rest;
             }
         }
-    } else if cfg!(target_os = "macos") {
-        for name in ["Wavelength", "app.wavelength.music.tauri"] {
-            dirs.push(home.join("Library/Application Support").join(name));
-        }
-    } else {
-        let base = std::env::var("XDG_DATA_HOME")
-            .ok()
-            .filter(|s| !s.is_empty())
-            .map(PathBuf::from)
-            .unwrap_or_else(|| home.join(".local/share"));
+    }
+    home
+}
+
+/// Linux data folders, from every packaging format.
+///
+/// A Flatpak has its own home and XDG data folder, and the deb/AppImage build
+/// keeps its library in the real home. The Flatpak manifest grants that folder
+/// read-only, so it can be adopted when the sandbox starts with no playlists;
+/// the other direction (a deb reading the Flatpak's folder) needs no grant.
+fn linux_legacy_dirs(home: &Path, xdg_home: &Path) -> Vec<PathBuf> {
+    let mut dirs = Vec::new();
+    let real = real_home(home);
+    let mut bases = vec![xdg_home.to_path_buf()];
+    let real_data = real.join(".local/share");
+    if real_data != xdg_home {
+        bases.push(real_data);
+    }
+    for base in &bases {
         for name in ["Wavelength", "app.wavelength.music.tauri"] {
             dirs.push(base.join(name));
         }
-        // A Flatpak app sees its own `~/.var/app/<id>/data` as the XDG data
-        // folder, so the same app installed both ways has two libraries.
-        for id in ["app.wavelength.music", "app.wavelength.music.tauri"] {
-            let data = home.join(".var/app").join(id).join("data");
-            for name in ["Wavelength", "app.wavelength.music.tauri", id] {
-                dirs.push(data.join(name));
-            }
+    }
+    for id in ["app.wavelength.music", "app.wavelength.music.tauri"] {
+        let data = real.join(".var/app").join(id).join("data");
+        for name in ["Wavelength", "app.wavelength.music.tauri", id] {
+            dirs.push(data.join(name));
         }
     }
     dirs.sort();
@@ -425,5 +452,38 @@ mod tests {
         copy_covers(&chosen.join("covers"), &live.join("covers"));
         assert_eq!(std::fs::read(live.join("covers/p1.jpg")).unwrap(), b"cover");
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn finds_the_real_home_from_inside_a_flatpak() {
+        let home = Path::new("/home/u/.var/app/app.wavelength.music");
+        let xdg = home.join("data");
+        let dirs = linux_legacy_dirs(home, &xdg);
+        let has = |p: &str| dirs.iter().any(|d| d == Path::new(p));
+
+        // The sandbox's own library.
+        assert!(has(
+            "/home/u/.var/app/app.wavelength.music/data/app.wavelength.music.tauri"
+        ));
+        // The deb/AppImage library, at the path the manifest grants.
+        assert!(has("/home/u/.local/share/app.wavelength.music.tauri"));
+        // Never a doubly nested sandbox path.
+        assert!(!dirs
+            .iter()
+            .any(|d| d.starts_with("/home/u/.var/app/app.wavelength.music/.var")));
+    }
+
+    #[test]
+    fn a_deb_install_finds_the_flatpak_library() {
+        let dirs = linux_legacy_dirs(Path::new("/home/u"), Path::new("/home/u/.local/share"));
+        assert!(dirs.iter().any(|d| d
+            == Path::new(
+                "/home/u/.var/app/app.wavelength.music/data/app.wavelength.music.tauri"
+            )));
+        assert!(dirs
+            .iter()
+            .any(|d| d == Path::new("/home/u/.local/share/app.wavelength.music.tauri")));
+        // A normal home is not mistaken for a sandbox.
+        assert_eq!(real_home(Path::new("/home/u")), Path::new("/home/u"));
     }
 }
