@@ -1,6 +1,7 @@
 pub mod api;
 pub mod audio;
 pub mod bridge;
+pub mod lyrics;
 pub mod store;
 pub mod updater;
 
@@ -30,6 +31,13 @@ fn boot(
     shell: Option<(tauri::AppHandle, bool)>,
 ) -> Result<(), String> {
     let store = store::Store::open(&dir)?;
+    // An explicit WL_DATA_DIR is a test or a second profile: keep it isolated
+    // instead of adopting the real library from another folder.
+    if std::env::var_os("WL_DATA_DIR").is_none() {
+        if let Some(from) = store.recover_library() {
+            println!("restored the library from {}", from.display());
+        }
+    }
     let state = Arc::new(api::AppState::new(store));
     api::resume_sync_host(state.clone());
     if let Some((handle, updater_ready)) = shell {

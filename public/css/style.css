@@ -1949,6 +1949,18 @@ html[data-viz-size=full] .np.lyr #viz{display:block}
 .ll.on{color:var(--text);transform:scale(1.04)}
 .lp{margin:0 0 22px;font:500 clamp(16px,2.2vw,20px)/1.65 var(--font-b,Inter,sans-serif);color:var(--text2)}
 .lyr-src{flex:none;padding:6px 0 2px;font:400 10px var(--font-m);letter-spacing:.06em;color:var(--text3);text-transform:uppercase}
+.lyr-foot{flex:none;display:flex;align-items:center;justify-content:center;gap:14px;flex-wrap:wrap;width:100%;padding:2px 0}
+.lyr-foot .lyr-src{padding:0}
+.lyr-offset{display:inline-flex;align-items:center;gap:1px;padding:2px;border:1px solid var(--line);border-radius:999px;background:color-mix(in srgb,var(--card2) 82%,transparent)}
+.lyr-ob{width:26px;height:26px;border:0;border-radius:50%;background:transparent;color:var(--text2);font:600 15px/1 var(--font-m);cursor:pointer;display:grid;place-items:center;transition:background .18s,color .18s}
+.lyr-ob:hover{background:var(--card);color:var(--text)}
+.lyr-ob:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
+.lyr-ov{min-width:54px;text-align:center;font:500 11px var(--font-m);color:var(--text2);font-variant-numeric:tabular-nums}
+.lyr-ov.changed{color:var(--accent)}
+.lyr-or{border:0;background:transparent;color:var(--accent);font:600 10px var(--font-m);letter-spacing:.06em;text-transform:uppercase;cursor:pointer;padding:0 6px;min-height:26px}
+.lyr-or[hidden]{display:none}
+.lyr-match{margin-top:1px;max-width:86%;text-align:center;font:400 10px var(--font-m);letter-spacing:.03em;color:var(--text3);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+@media (max-width:860px){.lyr-foot{gap:8px}.lyr-match{max-width:92%}}
 .lyr-msg{margin:0;color:var(--text2);font:400 14px var(--font-m);text-align:center;display:grid;gap:10px;justify-items:center}
 .lyr-sub{margin:4px 0 14px;color:var(--text3);font:400 12px/1.5 var(--font-m);max-width:380px;text-align:center}
 .lyr-dots{display:inline-flex;gap:6px}

@@ -1,6 +1,6 @@
 [package]
 name = "wavelength"
-version = "2.9.1"
+version = "2.9.2"
 description = "Wavelength desktop core"
 authors = ["Wavelength"]
 edition = "2021"

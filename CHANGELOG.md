@@ -1,5 +1,22 @@
 # Changelog
 
+## 2.9.2
+
+- **Playlists no longer vanish on Linux.** Library changes used to be batched for a fraction of a second
+  before saving; closing the window in that gap lost the last change, and the Flatpak and deb/AppImage
+  builds kept separate libraries, so switching between them looked like an empty account. Saves now
+  reach the disk immediately, the state is flushed again when the window closes, SQLite waits for the
+  write to complete, and `state.json` is written atomically. If a freshly started install finds no
+  playlists, it adopts the newest library left behind by another install layout, covers included.
+- **Better lyrics.** Lookups now run in the Rust core with a durable on-disk cache, so lyrics appear
+  instantly on replay and still work offline. Matching handles upload titles such as
+  "Artist - Song (Official Video) feat. …", prefers synced lyrics and rejects results whose length is
+  far from the song. The panel says which record matched and offers a per-song timing control
+  (±0.25 s, remembered for that song) that respects the file's own `[offset:]` tag. The next song's
+  lyrics load while the current one plays.
+- Plain-lyrics and instrumental states are reported clearly, and a failed lookup can be retried without
+  reopening the app.
+
 ## 2.9.1
 
 - **Device sync works again.** Hosting now lists every real network address (Wi-Fi, Ethernet, Tailscale)

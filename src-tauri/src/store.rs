@@ -81,11 +81,30 @@ impl Store {
         let conn = Connection::open(dir.join("wavelength.db")).map_err(|e| e.to_string())?;
         conn.execute_batch(
             "PRAGMA journal_mode=WAL;
-             PRAGMA synchronous=NORMAL;
+             -- A saved playlist must survive a power cut or a forced close, so
+             -- wait for the write to reach the disk instead of batching it.
+             PRAGMA synchronous=FULL;
              CREATE TABLE IF NOT EXISTS kv (key TEXT PRIMARY KEY, value TEXT NOT NULL);
              CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);",
         )
         .map_err(|e| e.to_string())?;
+        // If the database lost its state (an interrupted write, a copied data
+        // folder) the JSON mirror written next to it still has the library.
+        let has_state: Option<String> = conn
+            .query_row("SELECT value FROM kv WHERE key='state'", [], |r| r.get(0))
+            .ok();
+        if has_state.is_none() {
+            if let Ok(raw) = std::fs::read(dir.join("state.json")) {
+                if let Ok(value) = serde_json::from_slice::<Value>(&raw) {
+                    if let Ok(raw) = serde_json::to_string(&value) {
+                        let _ = conn.execute(
+                            "INSERT OR REPLACE INTO kv (key, value) VALUES ('state', ?1)",
+                            params![raw],
+                        );
+                    }
+                }
+            }
+        }
         Ok(Self {
             dir: dir.to_path_buf(),
             conn: Mutex::new(conn),
@@ -134,11 +153,58 @@ impl Store {
             }
         }
         self.kv_set("state", &next)?;
-        let _ = std::fs::write(
-            self.dir.join("state.json"),
-            serde_json::to_vec_pretty(&next).unwrap_or_default(),
-        );
+        // Write through a temp file so a crash mid-write cannot leave a
+        // half-written mirror behind; the rename is atomic.
+        let raw = serde_json::to_vec_pretty(&next).unwrap_or_default();
+        let path = self.dir.join("state.json");
+        let tmp = self.dir.join("state.json.tmp");
+        if std::fs::write(&tmp, raw).is_ok() {
+            let _ = std::fs::rename(&tmp, &path);
+        }
         Ok(next)
+    }
+
+    /// Bring back a library left behind by a different install layout.
+    ///
+    /// The Flatpak and the deb/AppImage builds keep their data in different
+    /// folders, and an old build may have used another name still. When this
+    /// install starts with no playlists at all, look for the newest other
+    /// folder that has some and adopt it (with its covers). Only an empty
+    /// library is replaced, so this never brings back a playlist the user
+    /// deleted while another install was running.
+    pub fn recover_library(&self) -> Option<PathBuf> {
+        let has_playlists = self
+            .state()
+            .get("playlists")
+            .and_then(|v| v.as_array())
+            .map(|a| !a.is_empty())
+            .unwrap_or(false);
+        if has_playlists {
+            return None;
+        }
+        let mut best: Option<(std::time::SystemTime, PathBuf, Value)> = None;
+        for dir in legacy_data_dirs() {
+            if dir == self.dir {
+                continue;
+            }
+            let Some(state) = state_from_dir(&dir) else { continue };
+            let count = state
+                .get("playlists")
+                .and_then(|v| v.as_array())
+                .map(|a| a.len())
+                .unwrap_or(0);
+            if count == 0 {
+                continue;
+            }
+            let at = modified(&dir);
+            if best.as_ref().map(|(b, _, _)| at > *b).unwrap_or(true) {
+                best = Some((at, dir, state));
+            }
+        }
+        let (_, from, state) = best?;
+        copy_covers(&from.join("covers"), &self.dir.join("covers"));
+        let _ = self.write_state(state);
+        Some(from)
     }
 
     pub fn merge_listening_into_state(&self, incoming: &Value) -> Value {
@@ -211,5 +277,153 @@ pub fn default_download_dir() -> String {
 
 pub fn default_data_dir() -> PathBuf {
     let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
-    PathBuf::from(home).join("Library/Application Support/Wavelength")
+    let home = PathBuf::from(home);
+    if cfg!(target_os = "windows") {
+        let base = std::env::var("APPDATA")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| home.join("AppData/Roaming"));
+        return base.join("app.wavelength.music.tauri");
+    }
+    if cfg!(target_os = "macos") {
+        return home.join("Library/Application Support/app.wavelength.music.tauri");
+    }
+    // Linux: the same XDG folder Tauri gives the deb and AppImage builds, so a
+    // headless run and the window share one library.
+    let base = std::env::var("XDG_DATA_HOME")
+        .ok()
+        .filter(|s| !s.is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| home.join(".local/share"));
+    base.join("app.wavelength.music.tauri")
+}
+
+/// Data folders this app has used before, on any packaging format.
+pub fn legacy_data_dirs() -> Vec<PathBuf> {
+    let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
+    let home = PathBuf::from(home);
+    let mut dirs = Vec::new();
+    if cfg!(target_os = "windows") {
+        if let Ok(appdata) = std::env::var("APPDATA") {
+            let base = PathBuf::from(appdata);
+            for name in ["Wavelength", "app.wavelength.music.tauri"] {
+                dirs.push(base.join(name));
+            }
+        }
+    } else if cfg!(target_os = "macos") {
+        for name in ["Wavelength", "app.wavelength.music.tauri"] {
+            dirs.push(home.join("Library/Application Support").join(name));
+        }
+    } else {
+        let base = std::env::var("XDG_DATA_HOME")
+            .ok()
+            .filter(|s| !s.is_empty())
+            .map(PathBuf::from)
+            .unwrap_or_else(|| home.join(".local/share"));
+        for name in ["Wavelength", "app.wavelength.music.tauri"] {
+            dirs.push(base.join(name));
+        }
+        // A Flatpak app sees its own `~/.var/app/<id>/data` as the XDG data
+        // folder, so the same app installed both ways has two libraries.
+        for id in ["app.wavelength.music", "app.wavelength.music.tauri"] {
+            let data = home.join(".var/app").join(id).join("data");
+            for name in ["Wavelength", "app.wavelength.music.tauri", id] {
+                dirs.push(data.join(name));
+            }
+        }
+    }
+    dirs.sort();
+    dirs.dedup();
+    dirs
+}
+
+/// Read the saved state from another data folder, preferring the database
+/// (authoritative) over the JSON mirror.
+fn state_from_dir(dir: &Path) -> Option<Value> {
+    let db = dir.join("wavelength.db");
+    if db.is_file() {
+        if let Ok(conn) = Connection::open_with_flags(
+            &db,
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+        ) {
+            let raw: Option<String> = conn
+                .query_row("SELECT value FROM kv WHERE key='state'", [], |r| r.get(0))
+                .ok();
+            if let Some(raw) = raw {
+                if let Ok(value) = serde_json::from_str::<Value>(&raw) {
+                    return Some(value);
+                }
+            }
+        }
+    }
+    let raw = std::fs::read(dir.join("state.json")).ok()?;
+    serde_json::from_slice(&raw).ok()
+}
+
+fn modified(dir: &Path) -> std::time::SystemTime {
+    let mut newest = std::time::UNIX_EPOCH;
+    for name in ["wavelength.db", "state.json"] {
+        if let Ok(m) = std::fs::metadata(dir.join(name)).and_then(|m| m.modified()) {
+            if m > newest {
+                newest = m;
+            }
+        }
+    }
+    newest
+}
+
+fn copy_covers(from: &Path, to: &Path) {
+    let Ok(rd) = std::fs::read_dir(from) else { return };
+    let _ = std::fs::create_dir_all(to);
+    for entry in rd.flatten() {
+        let path = entry.path();
+        if !path.is_file() {
+            continue;
+        }
+        let dest = to.join(entry.file_name());
+        if dest.exists() {
+            continue;
+        }
+        let _ = std::fs::copy(&path, &dest);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn finds_the_newest_legacy_library_only() {
+        let root = std::env::temp_dir().join(format!("wl-recover-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let live = root.join("live");
+        let old = root.join("old");
+        let empty = root.join("empty");
+        for dir in [&live, &old, &empty] {
+            std::fs::create_dir_all(dir.join("covers")).unwrap();
+        }
+        std::fs::write(old.join("state.json"), r#"{"playlists":[{"id":"p1","tracks":[]}]}"#).unwrap();
+        std::fs::write(old.join("covers/p1.jpg"), b"cover").unwrap();
+        std::fs::write(empty.join("state.json"), r#"{"playlists":[]}"#).unwrap();
+
+        // Feed the recovery walk directly: the test must not depend on where
+        // this machine keeps its real library.
+        let candidates = [&old, &empty];
+        let mut best: Option<(std::time::SystemTime, &Path)> = None;
+        for dir in candidates {
+            let Some(state) = state_from_dir(dir) else { continue };
+            let count = state.get("playlists").and_then(|v| v.as_array()).map(|a| a.len()).unwrap_or(0);
+            if count == 0 {
+                continue;
+            }
+            let at = modified(dir);
+            if best.map(|(b, _)| at >= b).unwrap_or(true) {
+                best = Some((at, dir));
+            }
+        }
+        let chosen = best.map(|(_, d)| d).unwrap();
+        assert_eq!(chosen, old.as_path());
+        copy_covers(&chosen.join("covers"), &live.join("covers"));
+        assert_eq!(std::fs::read(live.join("covers/p1.jpg")).unwrap(), b"cover");
+        let _ = std::fs::remove_dir_all(&root);
+    }
 }

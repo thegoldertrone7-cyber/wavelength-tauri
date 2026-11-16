@@ -24,7 +24,7 @@ pub const LAN_PORT: u16 = 47824;
 /// UDP port the Android app broadcasts `WAVELENGTH_DISCOVER_V1` on.
 pub const DISCOVERY_PORT: u16 = 38423;
 const DISCOVERY_PROBE: &[u8] = b"WAVELENGTH_DISCOVER_V1";
-pub const VERSION: &str = "2.9.1-tauri";
+pub const VERSION: &str = "2.9.2-tauri";
 
 pub struct AppState {
     pub store: Arc<Store>,
@@ -79,6 +79,7 @@ pub fn router(state: Arc<AppState>, public_dir: PathBuf) -> Router {
         .route("/api/health", get(health))
         .route("/api/config", get(get_config).put(put_config))
         .route("/api/stats", get(stats))
+        .route("/api/lyrics", get(lyrics))
         .route("/api/search", get(search))
         .route("/api/match", post(match_track))
         .route("/api/info/{id}", get(info))
@@ -224,6 +225,47 @@ async fn stats(State(st): State<Arc<AppState>>) -> Json<Value> {
         "matchedCount": st.store.state().get("matchedCount").and_then(|v| v.as_u64()).unwrap_or(0),
         "downloads": downloads
     }))
+}
+
+/* ───────────────────────── lyrics ───────────────────────── */
+
+#[derive(Deserialize)]
+struct LyricsQuery {
+    key: Option<String>,
+    track: Option<String>,
+    artist: Option<String>,
+    album: Option<String>,
+    duration: Option<i64>,
+    refresh: Option<String>,
+}
+
+/// Look up a song's lyrics in LRCLIB through the core, so the answer can be
+/// cached on disk and used again offline. The UI falls back to calling LRCLIB
+/// itself only when this endpoint is missing (older Android shell).
+async fn lyrics(
+    State(st): State<Arc<AppState>>,
+    Query(q): Query<LyricsQuery>,
+) -> ApiResult<Json<Value>> {
+    let key = q.key.unwrap_or_default().trim().to_string();
+    if key.is_empty() || key.len() > 240 {
+        return Err(bad("missing lyrics key"));
+    }
+    let want = crate::lyrics::Wanted {
+        track: q.track.unwrap_or_default().trim().to_string(),
+        artist: q.artist.unwrap_or_default().trim().to_string(),
+        album: q.album.unwrap_or_default().trim().to_string(),
+        duration: q.duration.unwrap_or(0).clamp(0, 86_400),
+    };
+    if want.track.is_empty() {
+        return Err(bad("missing track name"));
+    }
+    let dir = st.store.dir.clone();
+    let refresh = matches!(q.refresh.as_deref(), Some("1" | "true" | "yes"));
+    let out = tokio::task::spawn_blocking(move || crate::lyrics::lookup_cached(&dir, &key, &want, refresh))
+        .await
+        .map_err(|e| ApiError(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+        .map_err(|e| ApiError(StatusCode::BAD_GATEWAY, e))?;
+    Ok(Json(out))
 }
 
 fn count_files(dir: &std::path::Path) -> u64 {

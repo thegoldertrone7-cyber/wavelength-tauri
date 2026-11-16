@@ -101,6 +101,9 @@ finish-args:
   - --device=dri
   - --filesystem=xdg-music:ro
   - --filesystem=xdg-download
+  # Read-only view of the library a deb/AppImage install keeps outside the
+  # sandbox, so starting the Flatpak can bring those playlists across.
+  - --filesystem=~/.local/share/app.wavelength.music.tauri:ro
 modules:
   - name: yt-dlp
     buildsystem: simple
