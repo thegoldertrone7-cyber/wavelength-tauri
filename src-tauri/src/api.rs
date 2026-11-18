@@ -24,7 +24,7 @@ pub const LAN_PORT: u16 = 47824;
 /// UDP port the Android app broadcasts `WAVELENGTH_DISCOVER_V1` on.
 pub const DISCOVERY_PORT: u16 = 38423;
 const DISCOVERY_PROBE: &[u8] = b"WAVELENGTH_DISCOVER_V1";
-pub const VERSION: &str = "2.9.2-tauri";
+pub const VERSION: &str = "2.9.3-tauri";
 
 pub struct AppState {
     pub store: Arc<Store>,
@@ -38,11 +38,19 @@ pub struct AppState {
     pub bridge: crate::bridge::Bridge,
     /// In-app updates from GitHub Releases.
     pub updater: crate::updater::Updates,
+    /// Lyrics from several providers, for the page and the mod.
+    pub lyrics: crate::lyrics::Lyrics,
+    /// Writes lyrics down by listening to the song when no database has them (needs the `whisper` feature).
+    pub generator: Arc<crate::generator::Generator>,
+    /// At most this many yt-dlp processes run at once, however many rows the page asks about.
+    pub ytdlp: tokio::sync::Semaphore,
 }
 
 impl AppState {
     pub fn new(store: Store) -> Self {
         let cache = store.dir.join("cache/audio");
+        let lyric_dir = store.dir.join("cache/lyrics");
+        let generator_dir = store.dir.join("lyrics-generator");
         Self {
             store: Arc::new(store),
             audio: AudioEngine::new(cache),
@@ -53,6 +61,9 @@ impl AppState {
             discovery_started: Mutex::new(false),
             bridge: crate::bridge::Bridge::new(),
             updater: crate::updater::Updates::new(),
+            lyrics: crate::lyrics::Lyrics::new(lyric_dir),
+            generator: Arc::new(crate::generator::Generator::new(generator_dir)),
+            ytdlp: tokio::sync::Semaphore::new(3),
         }
     }
 }
@@ -79,7 +90,6 @@ pub fn router(state: Arc<AppState>, public_dir: PathBuf) -> Router {
         .route("/api/health", get(health))
         .route("/api/config", get(get_config).put(put_config))
         .route("/api/stats", get(stats))
-        .route("/api/lyrics", get(lyrics))
         .route("/api/search", get(search))
         .route("/api/match", post(match_track))
         .route("/api/info/{id}", get(info))
@@ -118,8 +128,10 @@ pub fn router(state: Arc<AppState>, public_dir: PathBuf) -> Router {
         .route("/api/audio/status", get(audio_status))
         .route("/api/audio/spectrum", get(audio_spectrum))
         .route("/api/audio/{action}", post(audio_action))
+        .route("/api/log", post(client_log))
         .merge(crate::bridge::routes())
         .merge(crate::updater::routes())
+        .merge(crate::lyrics::routes())
         .with_state(state);
 
     Router::new()
@@ -227,47 +239,6 @@ async fn stats(State(st): State<Arc<AppState>>) -> Json<Value> {
     }))
 }
 
-/* ───────────────────────── lyrics ───────────────────────── */
-
-#[derive(Deserialize)]
-struct LyricsQuery {
-    key: Option<String>,
-    track: Option<String>,
-    artist: Option<String>,
-    album: Option<String>,
-    duration: Option<i64>,
-    refresh: Option<String>,
-}
-
-/// Look up a song's lyrics in LRCLIB through the core, so the answer can be
-/// cached on disk and used again offline. The UI falls back to calling LRCLIB
-/// itself only when this endpoint is missing (older Android shell).
-async fn lyrics(
-    State(st): State<Arc<AppState>>,
-    Query(q): Query<LyricsQuery>,
-) -> ApiResult<Json<Value>> {
-    let key = q.key.unwrap_or_default().trim().to_string();
-    if key.is_empty() || key.len() > 240 {
-        return Err(bad("missing lyrics key"));
-    }
-    let want = crate::lyrics::Wanted {
-        track: q.track.unwrap_or_default().trim().to_string(),
-        artist: q.artist.unwrap_or_default().trim().to_string(),
-        album: q.album.unwrap_or_default().trim().to_string(),
-        duration: q.duration.unwrap_or(0).clamp(0, 86_400),
-    };
-    if want.track.is_empty() {
-        return Err(bad("missing track name"));
-    }
-    let dir = st.store.dir.clone();
-    let refresh = matches!(q.refresh.as_deref(), Some("1" | "true" | "yes"));
-    let out = tokio::task::spawn_blocking(move || crate::lyrics::lookup_cached(&dir, &key, &want, refresh))
-        .await
-        .map_err(|e| ApiError(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
-        .map_err(|e| ApiError(StatusCode::BAD_GATEWAY, e))?;
-    Ok(Json(out))
-}
-
 fn count_files(dir: &std::path::Path) -> u64 {
     let Ok(rd) = std::fs::read_dir(dir) else { return 0 };
     rd.flatten().filter(|e| e.path().is_file()).count() as u64
@@ -357,7 +328,41 @@ fn has_cmd(name: &str) -> bool {
     false
 }
 
+/// At most this many yt-dlp processes run at once. Opening a playlist makes the page ask about every visible
+/// song, and an unbounded burst of Python processes can exhaust memory or file handles (seen on Linux).
+const YTDLP_SLOTS: usize = 3;
+
+struct YtSlot;
+
+fn yt_slots() -> &'static (Mutex<usize>, std::sync::Condvar) {
+    static SLOTS: std::sync::OnceLock<(Mutex<usize>, std::sync::Condvar)> = std::sync::OnceLock::new();
+    SLOTS.get_or_init(|| (Mutex::new(0), std::sync::Condvar::new()))
+}
+
+impl YtSlot {
+    /// Blocks (we are always on a blocking thread here) until a slot is free.
+    fn take() -> YtSlot {
+        let (lock, cv) = yt_slots();
+        let mut n = lock.lock().unwrap_or_else(|e| e.into_inner());
+        while *n >= YTDLP_SLOTS {
+            n = cv.wait(n).unwrap_or_else(|e| e.into_inner());
+        }
+        *n += 1;
+        YtSlot
+    }
+}
+
+impl Drop for YtSlot {
+    fn drop(&mut self) {
+        let (lock, cv) = yt_slots();
+        let mut n = lock.lock().unwrap_or_else(|e| e.into_inner());
+        *n = n.saturating_sub(1);
+        cv.notify_one();
+    }
+}
+
 fn run_ytdlp(args: &[String], timeout: Duration) -> Result<String, String> {
+    let _slot = YtSlot::take();
     let mut child = Command::new(ytdlp_bin())
         .args(args)
         .stdout(std::process::Stdio::piped())
@@ -449,11 +454,11 @@ async fn search(
     if query.trim().is_empty() {
         return Ok(Json(json!([])));
     }
+    let _slot = st.ytdlp.acquire().await.map_err(|e| bad(e.to_string()))?;
     let items = tokio::task::spawn_blocking(move || search_sync(&query))
         .await
         .map_err(|e| bad(e.to_string()))?
         .map_err(bad)?;
-    let _ = st;
     Ok(Json(json!(items)))
 }
 
@@ -465,7 +470,7 @@ struct MatchBody {
 }
 
 async fn match_track(
-    State(_st): State<Arc<AppState>>,
+    State(st): State<Arc<AppState>>,
     Json(body): Json<MatchBody>,
 ) -> ApiResult<Json<Value>> {
     let title = body.title.unwrap_or_default();
@@ -475,6 +480,7 @@ async fn match_track(
         return Ok(Json(json!({ "ytId": null })));
     }
     let query = format!("{} {}", artist, title).trim().to_string();
+    let _slot = st.ytdlp.acquire().await.map_err(|e| bad(e.to_string()))?;
     let items = tokio::task::spawn_blocking(move || search_sync(&query))
         .await
         .map_err(|e| bad(e.to_string()))?
@@ -510,6 +516,7 @@ async fn info(State(st): State<Arc<AppState>>, AxPath(id): AxPath<String>) -> Ap
         }
     }
     let lookup = id.clone();
+    let _slot = st.ytdlp.acquire().await.map_err(|e| bad(e.to_string()))?;
     let value = tokio::task::spawn_blocking(move || video_info_sync(&lookup))
         .await
         .map_err(|e| bad(e.to_string()))?
@@ -583,6 +590,7 @@ async fn stream(
         }
     }
     let lookup = id.clone();
+    let _slot = st.ytdlp.acquire().await.map_err(|e| bad(e.to_string()))?;
     let url = tokio::task::spawn_blocking(move || resolve_stream_sync(&lookup))
         .await
         .map_err(|e| bad(e.to_string()))?
@@ -611,6 +619,15 @@ fn resolve_stream_sync(id: &str) -> Result<String, String> {
         .ok_or_else(|| "No audio stream available".to_string())
 }
 
+/// POST /api/log: the page's breadcrumbs and errors, appended to wavelength.log.
+async fn client_log(State(st): State<Arc<AppState>>, headers: HeaderMap, body: Bytes) -> StatusCode {
+    if crate::bridge::guard(&headers, true).is_err() {
+        return StatusCode::FORBIDDEN;
+    }
+    crate::diag::log(&st.store.dir, &format!("page: {}", String::from_utf8_lossy(&body)));
+    StatusCode::NO_CONTENT
+}
+
 async fn warm(State(st): State<Arc<AppState>>, AxPath(id): AxPath<String>) -> ApiResult<Json<Value>> {
     if let Ok(cache) = st.stream_cache.lock() {
         if cache
@@ -622,6 +639,7 @@ async fn warm(State(st): State<Arc<AppState>>, AxPath(id): AxPath<String>) -> Ap
         }
     }
     let lookup = id.clone();
+    let _slot = st.ytdlp.acquire().await.map_err(|e| bad(e.to_string()))?;
     let url = tokio::task::spawn_blocking(move || resolve_stream_sync(&lookup))
         .await
         .map_err(|e| bad(e.to_string()))?

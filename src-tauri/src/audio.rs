@@ -69,6 +69,20 @@ pub struct AudioEngine {
     loaded: Arc<Mutex<HashMap<String, PathBuf>>>,
 }
 
+/// The FFT plan and Hann window are built once: planning an FFT on every call was a large part of the cost of
+/// the level meter, which the app's visualiser and the Minecraft mod both poll many times a second.
+fn fft_plan() -> &'static (std::sync::Arc<dyn rustfft::Fft<f32>>, Vec<f32>) {
+    static PLAN: std::sync::OnceLock<(std::sync::Arc<dyn rustfft::Fft<f32>>, Vec<f32>)> = std::sync::OnceLock::new();
+    PLAN.get_or_init(|| {
+        let n = 2048usize;
+        let fft = rustfft::FftPlanner::<f32>::new().plan_fft_forward(n);
+        let window = (0..n)
+            .map(|i| 0.5 - 0.5 * ((2.0 * std::f32::consts::PI * i as f32) / (n as f32 - 1.0)).cos())
+            .collect();
+        (fft, window)
+    })
+}
+
 impl AudioEngine {
     pub fn new(cache: PathBuf) -> Self {
         let _ = std::fs::create_dir_all(&cache);
@@ -160,8 +174,13 @@ impl AudioEngine {
 
     /// 256 log-spaced magnitudes (0..255) from the recent output samples.
     pub fn spectrum(&self) -> Vec<u8> {
+        const N: usize = 2048;
+        // Copy only the newest N samples, and hold the lock only for that: the audio thread writes to this buffer.
         let samples: Vec<f32> = match self.tap.lock() {
-            Ok(b) => b.iter().copied().collect(),
+            Ok(b) => {
+                let skip = b.len().saturating_sub(N);
+                b.range(skip..).copied().collect()
+            }
             Err(_) => Vec::new(),
         };
         const BINS: usize = 256;
@@ -169,24 +188,16 @@ impl AudioEngine {
         if samples.len() < 512 {
             return out;
         }
-        let n = 2048usize;
-        let start = samples.len().saturating_sub(n);
-        let chunk = &samples[start..];
-        let mut buf: Vec<rustfft::num_complex::Complex<f32>> = chunk
+        let n = N;
+        let (fft, window) = fft_plan();
+        let mut buf: Vec<rustfft::num_complex::Complex<f32>> = samples
             .iter()
-            .take(n)
-            .enumerate()
-            .map(|(i, v)| {
-                let w = 0.5
-                    - 0.5 * ((2.0 * std::f32::consts::PI * i as f32) / (n as f32 - 1.0)).cos();
-                rustfft::num_complex::Complex::new(v * w, 0.0)
-            })
+            .zip(window.iter())
+            .map(|(v, w)| rustfft::num_complex::Complex::new(v * w, 0.0))
             .collect();
         while buf.len() < n {
             buf.push(rustfft::num_complex::Complex::new(0.0, 0.0));
         }
-        let mut planner = rustfft::FftPlanner::<f32>::new();
-        let fft = planner.plan_fft_forward(n);
         fft.process(&mut buf);
         // Log frequency mapping so bass does not own the whole display.
         for (i, slot) in out.iter_mut().enumerate() {

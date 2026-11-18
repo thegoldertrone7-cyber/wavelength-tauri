@@ -2009,3 +2009,15 @@ html[data-viz-size=full] .np.lyr #viz{display:block}
 .recap-views{margin:10px 0 14px;align-items:center}
 .recap-sep{width:1px;height:20px;background:var(--line);margin:0 6px}
 .recap-chart.dense{gap:2px}.recap-chart.dense .rc-bar span{font-size:.6em}
+
+/* 2.9.3: ported from the WIP — translations, generator progress, Linux playlist rendering. */
+.ll-tr{display:block;margin-top:2px;font:500 .62em/1.3 var(--font-b,Inter,sans-serif);color:var(--text3);opacity:.9}
+.ll.on .ll-tr{color:var(--text2)}
+.lyr-bar{width:min(260px,70%);height:4px;border-radius:4px;background:var(--line,rgba(127,127,127,.25));overflow:hidden;margin:10px auto 6px}.lyr-bar i{display:block;height:100%;background:var(--accent,currentColor);transition:width .6s linear}
+.lyr-btns{display:flex;gap:8px;justify-content:center;flex-wrap:wrap}
+.pl-more{height:1px}
+
+/* Linux webview (WebKitGTK): no entrance animation, no deferred painting, no promoted layers. Lists open plain and fast. */
+[data-linux="1"] .rise{animation:none!important;opacity:1!important;transform:none!important}
+[data-linux="1"] .list>*{content-visibility:visible!important}
+[data-linux="1"] .ph .cover,[data-linux="1"] .view,[data-linux="1"] .main{will-change:auto!important}

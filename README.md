@@ -55,7 +55,8 @@ a live level meter, and its keys control playback in milliseconds.
   playing or skip tracks.
 - Keep the Wavelength window open (it may be behind the game). The page supplies track, theme and like state
   and runs the commands; the mod shows a hint if it stops answering.
-- Protocol and design: `src-tauri/src/bridge.rs`, `public/js/bridge.js`.
+- **In-game lyrics** (mod 1.2.0, off by default): the core finds time-synced lyrics itself and the mod shows them like the Show the Lyrics mod.
+- Protocol and design: `src-tauri/src/bridge.rs`, `public/js/bridge.js`, `src-tauri/src/lyrics.rs`.
 
 ## Desktop app (macOS / Windows / Linux)
 
@@ -281,3 +282,10 @@ Streaming and downloading from YouTube is against YouTube's terms. Personal use 
 
 Releases are built and signed by GitHub Actions and installed apps update themselves from them. Setup and the
 release routine are in [UPDATES.md](UPDATES.md); changes per version are in [CHANGELOG.md](CHANGELOG.md).
+
+## Lyrics
+
+One native lookup (`src-tauri/src/lyrics.rs`) serves the app and the Minecraft mod. It asks LRCLIB, NetEase Music,
+KuGou and lyrics.ovh in parallel and keeps the best match by title, artist and length. Providers that need an
+account or a borrowed key (Genius, Musixmatch, Spotify) are deliberately not used. Only the song's title, artist,
+album and length are sent, only when lyrics are looked up, and results are cached in `cache/lyrics` in the data folder.

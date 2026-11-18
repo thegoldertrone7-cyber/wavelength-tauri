@@ -1,41 +1,50 @@
-# Handoff — 2.9.0 (Minecraft link + GitHub updates)
+# Handoff — 2.9.3 (ported 2.10 feature set on the 2.9.2 base)
 
-## Verified here (no Rust toolchain, no network)
+2.9.3 takes the features that were being prepared as 2.10.0 and ports them onto the hardened 2.9.2 release.
+The 2.9.1/2.9.2 durability, lyrics, sync, updater and Flatpak fixes are all present; none were dropped.
 
-- `npm test`: 28/28 (20 existing + 8 for `public/js/bridge.js`, run against a fake core that behaves like the Rust one).
-- Release scripts (`bump-version`, `release-notes`, `setup-github`) run on a scratch copy; both workflows parse as YAML.
-- The mod (`../modv4-wavelength-link`): `tools/run-selftest.sh` passes: 59 core checks plus the real `BridgeClient`
-  against a stand-in for the Rust link (NATIVE detected, port found from a stale 38421 config, commands carry the header).
+## Verified for this release
 
-## NOT verified — do these first, in order
+- `npm test`: 43/43 (20 skipper + 8 bridge + 11 lyrics + 4 motion).
+- `cargo test` and `cargo test --locked`: 38/38 (store recovery/durability, lyrics service and generation,
+  bridge 14, diag). `Cargo.lock` is committed and up to date — do not delete it.
+- `node --check` clean on all 18 JS files; `git diff --check` clean.
+- Versions consistent at 2.9.3 in `package.json`, `package-lock.json`, `src-tauri/Cargo.toml`,
+  `src-tauri/tauri.conf.json`, `api.rs::VERSION` and the release workflow's tag gate.
+- Updater public key present in `tauri.conf.json`; endpoints point at the public GitHub `latest.json`.
+- Flatpak job in `.github/workflows/release.yml` plus the standalone `flatpak.yml`; `scripts/build-flatpak.sh`
+  is the Tauri/GNOME build (no Electron).
 
-1. `cargo build` then `cargo test --manifest-path src-tauri/Cargo.toml`. `bridge.rs` and `updater.rs` were written
-   without a compiler. Likeliest fixes: Tauri updater API details in `updater.rs` (`Update::download/install`,
-   `UpdaterExt::updater`), `tauri::Config.plugins.0` in `updater::configured`, and the `json!` casts in `bridge.rs`.
-   `bridge.rs` has 14 unit tests (guard, queue, sanitising, bands, engine overlay) that have never run.
-   Commit the `Cargo.lock` this produces (new dependencies); do not use `--locked` before that.
-2. `npm run core`, then in a browser at http://127.0.0.1:47823 : play a song and
-   `curl -H 'X-Wavelength: 1' -X POST -d '{"cmd":"next"}' http://127.0.0.1:47823/api/bridge/cmd` should skip it;
-   `curl http://127.0.0.1:47823/api/bridge/state` should show the track, a moving `pos` and 24 `bands`.
-   Also confirm a request with `-H 'Origin: https://example.com'` gets 403.
-3. Start the mod (`./gradlew runClient`) with the app open: `/wavelength status` should say `NATIVE`, and the HUD,
-   seek, volume and the level meter should work. The mod's Gradle build and in-game rendering have still never
-   been run (see its README).
-4. GitHub: `node scripts/setup-github.js OWNER/REPO key.pub`, add the two secrets (UPDATES.md), push tag `v2.9.0`,
-   then install it and publish `2.9.1` to see the in-app update. `ubuntu-22.04-arm` and the macOS DMG step are the
-   likeliest CI surprises; drop the arm row from the matrix if it is not available to your account.
+## What shipped in 2.9.3
 
-## Assumptions to confirm
+- Native four-provider lyrics service shared by the page (`/api/lyrics`) and the Minecraft mod
+  (`/api/bridge/lyrics`), with durable on-disk cache, translations, match info and a per-song timing control.
+- Opt-in on-device Whisper lyric generator behind `cargo build --features whisper`. Default builds do not
+  include it and work normally. Generated lines are labelled "may contain mistakes".
+- Linux WebKitGTK playlist hardening (no view transitions / deferred painting / DMA-BUF renderer, chunked
+  rows, lite mode, capped yt-dlp concurrency, breadcrumb logging to `wavelength.log` in the data folder).
 
-- Repositories: app `thegoldertrone7-cyber/wavelength-tauri`, mod `thegoldertrone7-cyber/wavelength-link`.
-  Change in `tauri.conf.json` (setup-github.js) and `gradle.properties` (`mod_github_repo`).
-- The updater is off until a public key is in `tauri.conf.json`; the release workflow refuses to run without it.
+## Known limitations / not verified locally
 
-## Not done / ideas
+- The `whisper` feature build was **not compiled here**: `cmake` is not installed in this environment. The
+  default-feature build and all tests pass. If a release should include the generator, build with
+  `--features whisper` in CI (the release workflow uses default features, so shipped binaries do not include
+  the generator). Enabling it by default needs a build with cmake present and an API check against whisper-rs 0.14.
+- The provider response shapes (LRCLIB, NetEase, KuGou, lyrics.ovh) were written against the services' public
+  APIs and unit-tested, but live network calls were not exercised in this environment. `tried` in a lyrics
+  reply lists which providers answered; use
+  `curl 'http://127.0.0.1:47823/api/lyrics?title=…&artist=…&duration=…'` to check one.
+- The Linux playlist fix is inferred from the WebKitGTK view-transition behaviour, not reproduced on Linux
+  here (this machine is macOS). The `wavelength.log` breadcrumbs (`open playlist`, `drawn playlist`,
+  `error …`) are there if it still misbehaves; send that file.
+- Flatpak cannot be built or run on macOS. Validate the flatpak artifact from the release workflow.
+- Mod performance idea from the old WIP (cache `Link.resolveTheme()` per frame) was not ported; it is not a
+  blocker.
 
-- A Minecraft status line in Settings (the core already knows when the mod is watching: `Bridge::is_watched`).
-- Bundling or auto-installing the mod jar from the app.
-- WebP artwork still falls back to the placeholder in the mod (Java cannot decode it); the core could convert it.
-- The rest of the existing gaps in PORTING.md (Spotify import, LAN discovery, media keys).
-- Side note: the whole API (not just the bridge) sends permissive CORS headers, so any web page in your browser
-  can call e.g. `/api/state`. The bridge is guarded against this; the rest is worth tightening.
+## Repositories and release
+
+- App: `thegoldertrone7-cyber/wavelength-tauri`; mod: `thegoldertrone7-cyber/wavelength-link`.
+- Ports: HTTP core 47823, LAN sync 47824, UDP discovery 38423.
+- Tauri identifier `app.wavelength.music.tauri` (Flatpak id `app.wavelength.music`).
+- Tag `v2.9.3` and push to run the public release workflow; it publishes macOS/Windows/Linux bundles,
+  signatures, `latest.json` and the Flatpak, gated on the version match and updater key.

@@ -163,6 +163,7 @@ pub fn routes() -> Router<Arc<AppState>> {
         .route("/api/bridge/wait", get(wait))
         .route("/api/bridge/push", post(push))
         .route("/api/bridge/cmd", post(cmd))
+        .route("/api/bridge/lyrics", get(lyrics))
 }
 
 /* ───────────────────────── request guard ───────────────────────── */
@@ -191,7 +192,7 @@ fn origin_ok(origin: &str) -> bool {
         && (name.eq_ignore_ascii_case("127.0.0.1") || name.eq_ignore_ascii_case("localhost"))
 }
 
-fn guard(h: &HeaderMap, is_post: bool) -> R<()> {
+pub(crate) fn guard(h: &HeaderMap, is_post: bool) -> R<()> {
     let host = h.get(header::HOST).and_then(|v| v.to_str().ok()).unwrap_or("");
     if !loopback_host(host) {
         return Err(deny(StatusCode::FORBIDDEN, "The game link only answers this computer"));
@@ -217,16 +218,56 @@ async fn state(State(st): State<Arc<AppState>>, headers: HeaderMap) -> R<Json<Va
         // The mod just started reading: ask the page for a fresh snapshot now.
         b.wake.notify_one();
     }
-    let (meta, age) = b.view();
-    let state = meta.map(|m| overlay(m, &st.audio.status(), || st.audio.spectrum()));
+    let (meta, page_age) = b.view();
+    let eng = st.audio.status();
+    // Position, play state and levels come from the engine and are fresh whatever the page is doing. `age` is how
+    // stale those numbers are (the mod adds it to the position), `pageAge` is how long ago the page was heard from
+    // (the mod uses it only to tell whether commands and metadata can be trusted).
+    let live = meta.as_ref().map_or(false, |m| {
+        let id = m.pointer("/track/id").and_then(Value::as_str).unwrap_or("");
+        !eng.src.is_empty() && engine_matches(id, &eng.track_id)
+    });
+    let state = meta.map(|m| overlay(m, &eng, || st.audio.spectrum()));
     Ok(Json(json!({
         "ok": true,
         "native": true,
+        "lyrics": true,
         "app": "wavelength-tauri",
         "version": VERSION,
         "serverTime": now_ms(),
-        "age": age,
+        "age": if live { 0 } else { page_age },
+        "pageAge": page_age,
         "state": state,
+    })))
+}
+
+/// Time-synced lyrics for the track the page is showing, for the mod's in-game lyrics.
+/// The core looks them up itself (see lyrics.rs), so the mod needs no provider logic and
+/// the HUD never waits on the network: the mod fetches once per track and keeps the lines.
+async fn lyrics(State(st): State<Arc<AppState>>, headers: HeaderMap) -> R<Json<Value>> {
+    guard(&headers, false)?;
+    let (meta, _) = st.bridge.view();
+    let none = || Json(json!({ "ok": true, "id": "", "synced": false, "instrumental": false, "source": "", "lines": [] }));
+    let Some(m) = meta else { return Ok(none()) };
+    let id = m.pointer("/track/id").and_then(Value::as_str).unwrap_or("").to_string();
+    if id.is_empty() {
+        return Ok(none());
+    }
+    let text = |p: &str| m.pointer(p).and_then(Value::as_str).unwrap_or("").to_string();
+    let dur = m.pointer("/track/dur").and_then(Value::as_f64).unwrap_or(0.0);
+    let out = crate::lyrics::lookup(&st, &text("/track/title"), &text("/track/artist"), &text("/track/album"), dur, &id, false).await;
+    let found = &out.found;
+    Ok(Json(json!({
+        "ok": true,
+        "id": id,
+        "synced": !found.synced.is_empty(),
+        "instrumental": found.instrumental,
+        "source": found.source,
+        "lines": found.synced,
+        // While the app is writing the lyrics down itself, the mod keeps asking until they arrive.
+        "pending": out.pending(),
+        "stage": out.job.as_ref().map(|j| j.stage.clone()).unwrap_or_default(),
+        "progress": out.job.as_ref().map(|j| j.overall()).unwrap_or(0.0),
     })))
 }
 

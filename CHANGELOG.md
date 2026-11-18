@@ -1,5 +1,48 @@
 # Changelog
 
+## 2.9.3
+
+This release brings the features that were being prepared for 2.10.0 onto the hardened 2.9.2 base, so none of
+the reliability fixes from 2.9.1 and 2.9.2 are lost. Better lyrics across four databases, in-game lyrics,
+smoother Linux playlists, and an opt-in on-device lyric generator — with the durable saves, working updater
+and Flatpak build from 2.9.2 intact.
+
+- **A native lyrics service.** The Rust core asks LRCLIB, NetEase Music, KuGou and lyrics.ovh at once, scores each
+  answer by title, artist and length (so a different cut of the song or a different song is rejected), and keeps
+  the best. It stops early on a near-exact synced match, caches results on disk with a durable miss TTL, and
+  keeps translations when NetEase has them. Android, which has no core, still asks LRCLIB directly.
+- **One lookup for page and mod.** `lyrics::lookup` serves `/api/lyrics` and `/api/bridge/lyrics`, so the player
+  and the Minecraft mod always show the same lines. "Try again" forgets the cached miss and asks every provider
+  again.
+- **Lyrics view.** The panel shows where the lyrics came from and what record matched, with translations under
+  each line and a per-song timing control (±0.25 s, remembered for that song) that respects the file's own
+  `[offset:]` tag. The next song's lyrics load while the current one plays; plain-lyrics and instrumental
+  states are reported clearly.
+- **Lyrics in Minecraft.** `/api/bridge/lyrics` gives the Wavelength Link mod 1.2.0 the synced lines for the
+  playing track, found by the same service, for its in-game lyrics overlay.
+- **Lyric generator (opt-in build).** When no lyric database has a song, the core can listen to it and write the
+  lyrics down on the device with Whisper, with time stamps, and cache them like any other lyrics. It runs on its
+  own thread; `/api/lyrics` reports `pending`, `stage`, `progress` so the page shows a progress bar and the mod
+  shows "Writing the lyrics… NN%". Settings → Lyrics has the toggle, the model (tiny / base / small, downloaded
+  once from Hugging Face) and a Download button; the song page has a **Generate lyrics** button. The speech
+  engine needs cmake and a C++ compiler, so it is behind `cargo build --features whisper`; without it the rest
+  still builds and Settings says so. Generated text is cleaned (bracketed sounds, "thanks for watching",
+  looping repeats are dropped) and labelled "may contain mistakes".
+- **Linux playlists, second pass.** Opening a playlist on the Linux webview now draws without entrance animation,
+  deferred painting or promoted layers, loads 25 rows at a time, and does not resolve songs in the background.
+  The router can no longer throw (a bad id used to leave the old page up), and if the playlist page has not
+  appeared after 1.2 s a plain, image-free version of it is drawn. WebKitGTK's DMA-BUF renderer is disabled by
+  default to avoid blank windows and web-process crashes.
+- **Playlists no longer vanish on Linux.** Library changes still reach the disk immediately, the state is flushed
+  again when the window closes, SQLite waits for the write to complete, and `state.json` is written atomically.
+  A fresh install adopts the newest library left behind by another install layout (Flatpak, deb, AppImage), with
+  an in-app restore from a local backup when the core comes back empty.
+- **Device sync.** Hosting lists every real network address, answers the UDP discovery probe on port 38423,
+  serves the legacy `/api/sync/*` paths and `X-Wavelength-Sync` header for older clients, uses letter-and-digit
+  pairing codes, and resumes automatically when the app reopens.
+- **Updates and Flatpak intact.** The signed in-app updater and the Flatpak release bundle from 2.9.2 are carried
+  forward unchanged.
+
 ## 2.9.2
 
 - **Playlists no longer vanish on Linux.** Library changes used to be batched for a fraction of a second

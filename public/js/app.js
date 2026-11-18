@@ -172,7 +172,7 @@ function togglePin(id) {
   const a = Array.isArray(S.settings.pinned) ? S.settings.pinned.filter(x => S.playlists.some(p => p.id === x)) : [];
   const i = a.indexOf(id);
   if (i >= 0) a.splice(i, 1); else { if (a.length >= 9) return toast('You can pin up to 9 playlists'); a.push(id); }
-  S.settings.pinned = a; saveNow(); drawSide(); syncShortcuts();
+  S.settings.pinned = a; save(); drawSide(); syncShortcuts();
   if (curRoute === 'home' || curRoute === 'playlist') draw();
   toast(i >= 0 ? 'Unpinned' : 'Pinned for quick access');
 }
@@ -319,7 +319,7 @@ async function autoUpdateCheck() {
 /* ── Optional features ── Switching one off hides its controls and stops its work. */
 const FEATURES = [
   ['viz', 'Visualizer', 'Animated visuals in the full-screen player.'],
-  ['lyrics', 'Lyrics', 'Synced lyrics from LRCLIB.'],
+  ['lyrics', 'Lyrics', 'Synced lyrics from several lyric databases.'],
   ['skipper', 'Intro and outro skipper', 'Skips intros, outros and spoken breaks.'],
   ['recap', 'Listening recap', 'Stats by year, month or custom dates.'],
   ['import', 'Spotify import', 'Bring in playlists, albums and song lists.'],
@@ -387,10 +387,6 @@ const saveNow = () => pushState();
 function flushState() {
   clearTimeout(saveT); S.stateUpdatedAt = Date.now(); backupState();
   if (NATIVE) { try { api('/api/state', { method: 'PUT', json: S }).catch(() => {}); } catch {} return; }
-  /* A plain fetch can be cut off when the window closes. keepalive lets the
-     browser finish the request, but only for small bodies (~64 KB), so large
-     libraries fall back to the normal request. Library changes already save
-     immediately; this is the last chance for a pending settings tweak. */
   try {
     const body = JSON.stringify(S);
     fetch('/api/state', {
@@ -401,8 +397,7 @@ function flushState() {
 }
 /* If the core comes back empty (fresh data folder, or an update moved it),
    put back the playlists this device already saved. A deliberate delete-all
-   writes a newer timestamp first, so it is never undone. The same timestamp
-   check also recovers a save the window closed before it reached the core. */
+   writes a newer timestamp first, so it is never undone. */
 function restoreStateBackup() {
   let b = null;
   try { b = JSON.parse(localStorage.getItem(STATE_BACKUP) || 'null'); } catch {}
@@ -417,8 +412,6 @@ function restoreStateBackup() {
     pushState();
     return b.playlists.length;
   }
-  /* The backup is newer than the core's snapshot, so a change was saved here
-     but never arrived. Add the playlists and songs the core does not know. */
   let changed = 0;
   for (const p of b.playlists) {
     if (!p || !p.id) continue;
@@ -865,20 +858,19 @@ function layoutRefresh() {
 }
 
 /* ═════════ lyrics ═════════
-   Lyrics come from lrclib.net through the local core, which keeps every hit on
-   disk: a solved song shows its lyrics again instantly, and they still work
-   offline. Synced lyrics follow the song, honour the file's [offset:] tag, and
-   can be nudged by a quarter second from the player. */
+   The native core asks LRCLIB, NetEase, KuGou and lyrics.ovh together, scores
+   each answer by title/artist/length and keeps the best on disk. A solved song
+   works offline. Synced lines honour the file's [offset:] tag and can be nudged
+   a quarter second from the player. When no database has the song, an opt-in
+   generator can listen to it and write the words down on this device. */
 const LY = window.WLLyrics || {};
 const lyrOffsetMap = () => (S.settings.lyrOffsets && typeof S.settings.lyrOffsets === 'object' && !Array.isArray(S.settings.lyrOffsets)) ? S.settings.lyrOffsets : {};
 const lyrUserOffset = key => (parseFloat(lyrOffsetMap()[key]) || 0) + (parseFloat(S.settings.lyrOffset) || 0);
 R.lyrCache = new Map();
+R.lyr = { on: false, key: '', data: null, idx: -1, state: 'idle' };
 
-/* Fallback for builds whose core has no /api/lyrics endpoint (the Android
-   shell): ask LRCLIB directly. The desktop core normally answers first. */
-async function lyricsDirect(t) {
-  const g = LY.guessTrack ? LY.guessTrack(t.title, t.artist) : { track: t.title || '', artist: t.artist || '' };
-  const dur = Math.round((isFinite(audio.duration) && audio.duration && R.cur && uid(R.cur) === uid(t) ? audio.duration : +t.duration) || 0);
+/* Android has no core; ask LRCLIB directly and shape the answer like the core's. */
+async function lyricsDirect(t, g, dur) {
   const q = o => Object.entries(o).filter(([, v]) => v).map(([k, v]) => k + '=' + encodeURIComponent(v)).join('&');
   const get = async url => {
     const ctl = new AbortController(), kill = setTimeout(() => ctl.abort(), 9000);
@@ -897,52 +889,55 @@ async function lyricsDirect(t) {
       if (best && (!dur || !best.duration || Math.abs(best.duration - dur) <= 8)) hit = best;
     }
   } else throw new Error('status ' + r.status);
-  return hit
-    ? { found: true, synced: hit.syncedLyrics || '', plain: hit.plainLyrics || '', instrumental: !!hit.instrumental, matched: { track: hit.trackName || '', artist: hit.artistName || '', duration: hit.duration || 0 }, cached: false }
-    : { found: false, synced: '', plain: '', instrumental: false };
+  if (!hit) return { synced: [], offset: 0, plain: '', instrumental: false, found: false, cached: false, source: 'LRCLIB', matched: null, pending: false };
+  const meta = LY.parseLrcMeta ? LY.parseLrcMeta(hit.syncedLyrics || '') : { lines: [], offset: 0 };
+  return {
+    synced: meta.lines, offset: meta.offset, plain: String(hit.plainLyrics || '').trim(),
+    instrumental: !!hit.instrumental, found: true, cached: false, source: 'LRCLIB',
+    matched: { track: hit.trackName || '', artist: hit.artistName || '', duration: hit.duration || 0 },
+    pending: false, generated: false, canGenerate: false, progress: 0, stage: '', label: '', generateError: ''
+  };
 }
 
-async function lyricsFor(t, refresh) {
+async function lyricsFor(t, opt = {}) {
   const key = uid(t);
   if (!key) throw new Error('This song has no id');
-  if (R.lyrCache.has(key) && !refresh) return R.lyrCache.get(key);
+  const refresh = !!opt.refresh, generate = !!opt.generate;
+  if (R.lyrCache.has(key) && !refresh && !generate && !opt.pending) return R.lyrCache.get(key);
+  if (refresh) { R.lyrCache.delete(key); if (!generate) opt.generate = false; }
   const g = LY.guessTrack ? LY.guessTrack(t.title, t.artist) : { track: t.title || '', artist: t.artist || '' };
   const dur = Math.round((isFinite(audio.duration) && audio.duration && R.cur && uid(R.cur) === key ? audio.duration : +t.duration) || 0);
-  const qs = new URLSearchParams({ key, track: g.track, artist: g.artist });
+  const qs = new URLSearchParams({ key, title: g.track, artist: g.artist, id: key });
   if (t.album) qs.set('album', t.album);
   if (dur > 0) qs.set('duration', String(dur));
   if (refresh) qs.set('refresh', '1');
-  let hit = null;
+  if (generate) qs.set('generate', '1');
+  let d;
   try {
-    const ctl = new AbortController(), kill = setTimeout(() => ctl.abort(), 15000);
-    let r;
-    try { r = await fetch('/api/lyrics?' + qs, { signal: ctl.signal, headers: { 'X-Wavelength': '1' } }); } finally { clearTimeout(kill); }
-    if (r.ok) hit = await r.json();
-    else {
+    const r = await fetch('/api/lyrics?' + qs, { signal: AbortSignal.timeout ? AbortSignal.timeout(18000) : undefined, headers: { 'X-Wavelength': '1' } });
+    if (!r.ok) {
       const e = await r.json().catch(() => null);
-      throw new Error((e && e.error) || `Lyrics lookup failed (${r.status})`);
+      throw new Error((e && e.error) || 'Lyrics lookup failed (' + r.status + ')');
     }
+    const b = await r.json();
+    const synced = Array.isArray(b.synced) ? b.synced : (LY.parseLrc ? LY.parseLrc(b.synced || '') : []);
+    d = {
+      synced, offset: +b.offset || 0, plain: String(b.plain || '').trim(), instrumental: !!b.instrumental,
+      found: !!b.found, cached: !!b.cached, source: b.source || 'LRCLIB', matched: b.matched || null,
+      pending: !!b.pending, stage: b.stage || '', progress: +b.progress || 0, label: b.label || '',
+      generated: !!b.generated, canGenerate: !!b.canGenerate, generateError: b.generateError || ''
+    };
   } catch (e) {
     if (!NATIVE) throw e;
-    hit = await lyricsDirect(t);
+    d = await lyricsDirect(t, g, dur);
   }
-  const body = hit || {};
-  const meta = LY.parseLrcMeta ? LY.parseLrcMeta(body.synced || '') : { lines: [], offset: 0 };
-  const res = {
-    synced: meta.lines, offset: meta.offset,
-    plain: String(body.plain || '').trim(),
-    instrumental: !!body.instrumental,
-    cached: !!body.cached,
-    matched: body.matched || null
-  };
-  R.lyrCache.set(key, res);
+  R.lyrCache.set(key, d);
   while (R.lyrCache.size > 120) R.lyrCache.delete(R.lyrCache.keys().next().value);
-  if (res.synced.length || res.plain || res.instrumental) lyricsPrefetch();
-  return res;
+  if ((d.synced.length || d.plain || d.instrumental) && !d.pending) lyricsPrefetch();
+  return d;
 }
 
-/* Warm the next song's lyrics while this one plays. The core serves repeats
-   from disk, so this normally costs a single lookup per album. */
+/* Warm the next song's lyrics while this one plays. */
 let lyrPrefetchT = 0;
 function lyricsPrefetch() {
   clearTimeout(lyrPrefetchT);
@@ -954,7 +949,6 @@ function lyricsPrefetch() {
   }, 1800);
 }
 
-R.lyr = { on: false, key: '', data: null, idx: -1, state: 'idle' };
 function lyricsToggle(force) {
   const on = typeof force === 'boolean' ? force : !R.lyr.on;
   if (on && (S.settings.lyrics === false || !featOn('lyrics'))) return toast('Lyrics are turned off in Settings');
@@ -962,15 +956,23 @@ function lyricsToggle(force) {
   const b = $('#b-lyr'); if (b) b.classList.toggle('on', on);
   if (on) lyricsLoad(); else lyricsStop();
 }
-async function lyricsLoad(refresh) {
+let lyrPollT = 0;
+async function lyricsLoad(opt = {}) {
+  clearTimeout(lyrPollT);
   const t = R.cur, box = $('#np-lyrics'); if (!box) return;
   if (!t) { box.innerHTML = '<p class="lyr-msg">Play a song to see its lyrics.</p>'; return; }
   const key = uid(t); R.lyr.key = key; R.lyr.idx = -1; R.lyr.data = null;
-  if (refresh) R.lyrCache.delete(key);
-  box.innerHTML = '<p class="lyr-msg"><span class="lyr-dots"><i></i><i></i><i></i></span>Finding lyrics…</p>';
+  if (opt.refresh) R.lyrCache.delete(key);
+  if (!opt.keepMsg) box.innerHTML = '<p class="lyr-msg"><span class="lyr-dots"><i></i><i></i><i></i></span>Finding lyrics…</p>';
   try {
-    const d = await lyricsFor(t, refresh);
+    const d = await lyricsFor(t, { ...opt, pending: !!opt.keepMsg });
     if (!R.lyr.on || R.lyr.key !== key) return;
+    if (d.pending) {
+      const pct = Math.round(Math.min(1, Math.max(0, d.progress)) * 100);
+      box.innerHTML = `<p class="lyr-msg"><span class="lyr-dots"><i></i><i></i><i></i></span>${esc(d.label || 'Writing the lyrics down')}…</p><div class="lyr-bar"><i style="width:${pct}%"></i></div><p class="lyr-sub">No lyric database had this song, so Wavelength is listening to it on this device. ${pct}%</p>`;
+      lyrPollT = setTimeout(() => { if (R.lyr.on && R.lyr.key === key) lyricsLoad({ keepMsg: true }); }, 2000);
+      return;
+    }
     R.lyr.data = d; lyricsRender(d, t);
   } catch (e) {
     if (R.lyr.key !== key) return;
@@ -978,16 +980,16 @@ async function lyricsLoad(refresh) {
   }
 }
 
-/* Footer under the lines: where the lyrics came from, which record matched,
-   and the per-song timing nudge. */
+/* Footer: where the answer came from, what record matched, and the timing nudge. */
 function lyrFooter(d, label) {
   const key = R.lyr.key, v = lyrUserOffset(key), synced = !!(d.synced && d.synced.length);
   const has = synced || !!d.plain || !!d.instrumental;
+  const src = d.generated ? `${esc(d.source || 'Generated on this device')} · may contain mistakes` : esc(label);
   const m = d.matched && (d.matched.track || d.matched.artist)
     ? `<div class="lyr-match">Matched ${esc(d.matched.track || '')}${d.matched.artist ? ' — ' + esc(d.matched.artist) : ''}${d.matched.duration ? ` · ${Math.floor(d.matched.duration / 60)}:${String(Math.round(d.matched.duration % 60)).padStart(2, '0')}` : ''}</div>`
     : '';
   return `<div class="lyr-foot">
-    <span class="lyr-src">${esc(label)}${d.cached && has ? ' · saved offline' : ''}</span>
+    <span class="lyr-src">${src}${d.cached && has ? ' · saved offline' : ''}</span>
     ${synced ? `<span class="lyr-offset" role="group" aria-label="Lyrics timing">
       <button class="lyr-ob" data-act="lyr-off" data-d="-0.25" aria-label="Lyrics a quarter second earlier" title="Earlier">−</button>
       <span class="lyr-ov${v ? ' changed' : ''}" id="lyr-ov" title="Timing for this song">${LY.formatOffset ? LY.formatOffset(v) : '0.00s'}</span>
@@ -1000,11 +1002,11 @@ function lyricsRender(d, t) {
   const box = $('#np-lyrics'); if (!box) return;
   if (d.instrumental) { box.innerHTML = '<p class="lyr-msg">Instrumental. No lyrics for this one.</p>'; return; }
   if (d.synced.length) {
-    box.innerHTML = `<div class="lyr-scroll synced" id="lyr-scroll"><div class="lyr-pad"></div>${d.synced.map((l, i) => `<p class="ll" data-i="${i}" data-t="${l.t}">${l.text ? esc(l.text) : '♪'}</p>`).join('')}<div class="lyr-pad"></div></div>${lyrFooter(d, 'Lyrics from LRCLIB')}`;
+    box.innerHTML = `<div class="lyr-scroll synced" id="lyr-scroll"><div class="lyr-pad"></div>${d.synced.map((l, i) => `<p class="ll" data-i="${i}" data-t="${l.t}">${l.text ? esc(l.text) : '♪'}${l.tr ? `<span class="ll-tr">${esc(l.tr)}</span>` : ''}</p>`).join('')}<div class="lyr-pad"></div></div>${lyrFooter(d, 'Lyrics from ' + (d.source || 'LRCLIB'))}`;
     lyricsSync(true); return;
   }
-  if (d.plain) { box.innerHTML = `<div class="lyr-scroll" id="lyr-scroll"><div class="lyr-pad sm"></div>${d.plain.split(/\n{2,}/).map(par => `<p class="lp">${esc(par).replace(/\n/g, '<br>')}</p>`).join('')}<div class="lyr-pad sm"></div></div>${lyrFooter(d, 'Lyrics from LRCLIB · not time-synced')}`; return; }
-  box.innerHTML = `<p class="lyr-msg">No lyrics found for “${esc(t.title)}”.</p><p class="lyr-sub">They are matched by title, artist and length. Fixing the song’s details often helps, and every lookup is cached.</p><div class="acts"><button class="btn sm" data-act="lyr-retry">${I.search}Try again</button><button class="btn sm" data-act="edit-song">${I.edit}Edit song details</button></div>${lyrFooter(d, 'Nothing on LRCLIB yet')}`;
+  if (d.plain) { box.innerHTML = `<div class="lyr-scroll" id="lyr-scroll"><div class="lyr-pad sm"></div>${d.plain.split(/\n{2,}/).map(par => `<p class="lp">${esc(par).replace(/\n/g, '<br>')}</p>`).join('')}<div class="lyr-pad sm"></div></div>${lyrFooter(d, 'Lyrics from ' + (d.source || 'LRCLIB') + ' · not time-synced')}`; return; }
+  box.innerHTML = `<p class="lyr-msg">No lyrics found for “${esc(t.title)}”.</p><p class="lyr-sub">LRCLIB, NetEase, KuGou and lyrics.ovh were asked and none had a match by title, artist and length. Fixing the song’s details often helps, and every lookup is cached.</p>${d.generateError ? `<p class="lyr-sub">${esc(d.generateError)}</p>` : ''}<div class="lyr-btns"><button class="btn sm" data-act="lyr-retry">${I.search}Try again</button><button class="btn sm" data-act="edit-song">${I.edit}Edit song details</button>${d.canGenerate ? '<button class="btn sm acc" data-act="lyr-gen">Generate lyrics</button>' : ''}</div>${lyrFooter(d, 'Nothing found yet')}`;
 }
 function lyricsOffsetBy(delta) {
   const key = R.lyr.key; if (!key || !R.lyr.data || !R.lyr.data.synced.length) return;
@@ -1052,7 +1054,7 @@ function lyricsSync(force) {
     sc.scrollTo({ top: Math.max(0, target), behavior: force || motionReduced() ? 'auto' : 'smooth' });
   }
 }
-function lyricsStop() { clearTimeout(lyrPrefetchT); R.lyr.key = ''; R.lyr.data = null; }
+function lyricsStop() { clearTimeout(lyrPollT); clearTimeout(lyrPrefetchT); R.lyr.key = ''; R.lyr.data = null; }
 
 /* ═════════ dotted background and custom CSS ═════════ */
 function applyDots() {
@@ -1263,13 +1265,11 @@ function ovWrite(key, yt, to) {
   }
 }
 function afterSongEdit() {
-  saveNow(); drawSide(); saveSession(true);
+  save(); drawSide(); saveSession(true);
+  // The old lyrics may belong to the old title/artist; ask again with the new details.
+  if (R.lyr && R.lyr.on && R.cur) { R.lyrCache.clear(); lyricsLoad(); }
   if (R.cur) { uiNow(); mediaSession(); }
   renderQueue(); hl();
-  /* New details mean a new lyrics search: the old answer may belong to the old
-     title. Drop the memory cache and, if the panel is open, look again now. */
-  R.lyrCache.clear();
-  if (R.lyr.on && R.cur) lyricsLoad(true);
   if (curRoute === 'search') { const root = $('#sr'); if (root && R.results.length) root.innerHTML = searchHTML(R.results); observeRows(); }
   else draw();
 }
@@ -1384,14 +1384,14 @@ function removeFromCtx(c, t) {
     const pl = S.playlists.find(p => p.id === c);
     if (pl) { const prev = pl.tracks; pl.tracks = prev.filter(x => !same(x)); undo = () => { pl.tracks = prev; }; }
   }
-  saveNow(); saveSession(true);
+  save(); saveSession(true);
   const finish = () => { drawSide(); hl(); if (curRoute !== 'search') draw(); };
   if (rowEl && !motionReduced()) {
     rowEl.style.maxHeight = rowEl.offsetHeight + 'px'; void rowEl.offsetHeight;
     rowEl.classList.add('leaving'); rowEl.closest('.list')?.classList.add('busy');
     setTimeout(finish, 260);
   } else finish();
-  if (undo) undoable(`Removed “${t.title}”`, () => { undo(); saveNow(); drawSide(); hl(); if (curRoute !== 'search') draw(); saveSession(true); });
+  if (undo) undoable(`Removed “${t.title}”`, () => { undo(); save(); drawSide(); hl(); if (curRoute !== 'search') draw(); saveSession(true); });
 }
 
 /* ═════════ views ═════════ */
@@ -1525,14 +1525,34 @@ function vPlaylist(id) {
     </div>
     <div class="list${S.settings.plView === 'grid' ? ' grid' : ''}" id="pl-list">${plRowsHTML(tracks, id)}</div>`;
 }
-const plRowsHTML = (tracks, id) => tracks.length ? rows(tracks, id)
-  : R.plFilter ? `<div class="empty">No songs match “${esc(R.plFilter)}”.</div>`
-  : '<div class="empty">Empty for now. Use the ••• menu on any song to add it here.</div>';
+/* A playlist can hold hundreds of songs. Drawing every row (each with an image and an entrance animation) at once is
+   what stalled and crashed weaker webviews, so rows are drawn in chunks and the next chunk is added as you scroll. */
+const plChunk = () => (typeof LINUX_WEBVIEW !== 'undefined' && LINUX_WEBVIEW) ? 25 : 50;
+function plRowsHTML(tracks, id) {
+  if (!tracks.length) return R.plFilter ? `<div class="empty">No songs match “${esc(R.plFilter)}”.</div>`
+    : '<div class="empty">Empty for now. Use the ••• menu on any song to add it here.</div>';
+  R.plShown = Math.min(plChunk(), tracks.length);
+  return rows(tracks.slice(0, R.plShown), id) + (tracks.length > R.plShown ? '<div class="pl-more" id="pl-more" aria-hidden="true"></div>' : '');
+}
+let moreObserver;
+function armMore() {
+  if (moreObserver) { moreObserver.disconnect(); moreObserver = null; }
+  const more = $('#pl-more'); if (!more || !('IntersectionObserver' in window)) { if (more) fillRows(1e9); return; }
+  moreObserver = new IntersectionObserver(es => { if (es.some(e => e.isIntersecting)) fillRows(plChunk()); }, { root: $('#main'), rootMargin: '700px 0px' });
+  moreObserver.observe(more);
+}
+function fillRows(n) {
+  const more = $('#pl-more'), box = $('#pl-list'); if (!more || !box) return;
+  const id = curRoute === 'liked' ? 'liked' : curArg, all = ctxList(id), from = R.plShown || 0;
+  const next = all.slice(from, from + n);
+  if (next.length) { more.insertAdjacentHTML('beforebegin', rows(next, id, from)); R.plShown = from + next.length; hl(); requestAnimationFrame(observeRows); }
+  if (R.plShown >= all.length) { more.remove(); if (moreObserver) { moreObserver.disconnect(); moreObserver = null; } }
+}
 function repaintPlaylist() {
   const box = $('#pl-list'); if (!box) return;
   const id = curRoute === 'liked' ? 'liked' : curArg;
   WLMotion.flip(box, () => { box.innerHTML = plRowsHTML(ctxList(id), id); });
-  hl(); requestAnimationFrame(observeRows);
+  hl(); requestAnimationFrame(() => { observeRows(); armMore(); });
 }
 function playlistTracks(id) {
   return id === 'liked' ? S.liked : ((S.playlists.find(p => p.id === id) || {}).tracks || []);
@@ -1561,7 +1581,7 @@ function playlistMore(el) {
       for (const t of all) { const k = dupKey(t); if (seen.has(k)) continue; seen.add(k); keep.push(t); }
       const gone = all.length - keep.length;
       if (!gone) return toast('No duplicates found');
-      const apply = list => { if (id === 'liked') S.liked = list; else { const p = S.playlists.find(x => x.id === id); if (p) p.tracks = list; } saveNow(); drawSide(); refreshView(); };
+      const apply = list => { if (id === 'liked') S.liked = list; else { const p = S.playlists.find(x => x.id === id); if (p) p.tracks = list; } save(); drawSide(); refreshView(); };
       apply(keep);
       undoable(`Removed ${plural(gone, 'duplicate')}`, () => apply(all));
     }],
@@ -1569,7 +1589,7 @@ function playlistMore(el) {
       const pl = S.playlists.find(x => x.id === id); if (!pl) return;
       const cover = pl.cover && pl.cover.url && pl.cover.url.startsWith('/covers/') ? { emoji: '🎧', tone: 'ember' } : { ...(pl.cover || {}) };
       const copy = { ...structuredClone(pl), id: rid(), name: `${pl.name} copy`, cover, createdAt: Date.now() };
-      S.playlists.push(copy); saveNow(); drawSide(); nav('playlist/' + copy.id); toast(`Duplicated “${pl.name}”`);
+      S.playlists.push(copy); save(); drawSide(); nav('playlist/' + copy.id); toast(`Duplicated “${pl.name}”`);
     }]]),
     ['Copy song list', 'copy', () => {
       const l = playlistTracks(id);
@@ -1810,7 +1830,7 @@ async function deleteLocalTrack(t) {
       R.cur = null; R.idx = -1; cancelPrepared(); clearStall(); uiNow();
     } else if (R.cur) R.idx = R.queue.findIndex(x => uid(x) === uid(R.cur));
     renderQueue();
-    saveNow(); drawSide(); saveSession(true); refreshView();
+    save(); drawSide(); saveSession(true); refreshView();
     toast('Local file deleted');
   } catch (e) { toast(e.message); }
 }
@@ -2127,7 +2147,8 @@ function vSet() {
       <div class="line"><div><div class="l">Skip outros &amp; credits</div><div class="s">Credits, dead air and talking at the end. Moves on to the next song.</div></div><select class="inp" data-set="skipOutro" aria-label="Skip outros">${skipOpts(s.skipOutro)}</select></div>
       <div class="line"><div><div class="l">Skip spoken breaks</div><div class="s">Ads, sponsor reads and long silent gaps in the middle of a song or mix.</div></div><select class="inp" data-set="skipBreaks" aria-label="Skip spoken breaks">${skipOpts(s.skipBreaks)}</select></div>
       <div class="line"><div><div class="l">How sure before skipping</div><div class="s">Careful only acts on strong evidence. Eager acts on weaker hints and will sometimes be wrong. Automatic skips always have Undo.</div></div><select class="inp" data-set="skipSure" aria-label="How sure before skipping">${[['careful', 'Careful'], ['balanced', 'Balanced'], ['eager', 'Eager']].map(([v, l]) => `<option value="${v}"${(s.skipSure || 'balanced') === v ? ' selected' : ''}>${l}</option>`).join('')}</select></div>
-      ${tg('lyrics', 'Lyrics from LRCLIB', 'Adds a Lyrics button to the full-screen player. Only when you open it, the song’s title, artist and length are sent to lrclib.net to find matching lyrics.')}
+      ${tg('lyrics', 'Lyrics', 'Adds a Lyrics button to the full-screen player, and powers in-game lyrics in the Minecraft mod. Only when lyrics are looked up, the song’s title, artist, album and length are sent to LRCLIB, NetEase Music, KuGou and lyrics.ovh to find the best match. Results are kept on this device.')}
+      ${NATIVE ? '' : '<div id="gen-box"></div>'}
       ${tg('skipCrowd', 'Use SponsorBlock community data', 'Asks sponsor.ajay.app whether people have marked an intro or outro. It is sent a 4-character fingerprint of the video, never the video itself.')}
       ${NATIVE ? '' : tg('skipSilence', 'Detect silence in the audio', 'After a song is saved, ffmpeg finds quiet lead-ins, dead air and long gaps. Needs ffmpeg and runs only on this computer.')}
       <div class="line"><div><div class="l">What it has learned</div><div class="s">${Object.keys(s.skipMemory || {}).length ? `Remembers ${plural(Object.keys(s.skipMemory).length, 'song')} where you undid a skip.` : 'When you undo or rewind an automatic skip, it stops doing that for the song.'}</div></div><button class="btn" data-act="skip-forget">Forget</button></div>
@@ -2179,7 +2200,26 @@ function vSet() {
       <div class="line"><div class="l">Ads</div><div class="meta">None</div></div><div class="line"><div class="l">Price</div><div class="meta">Free</div></div></div></div>`;
 }
 
-/* ═════════ router ═════════ */
+/* ═════════ lyric generator settings ═════════
+   The core owns these (so the Minecraft mod follows them): whether to write lyrics down by listening to the song when
+   no database has them, and which speech model to use. */
+async function genBoxLoad() {
+  const box = $('#gen-box'); if (!box) return;
+  let g; try { g = await api('/api/lyrics/generator'); } catch { return; }
+  if (!$('#gen-box')) return;
+  const cur = (g.models || []).find(m => m.id === g.model) || {};
+  const dl = g.downloading ? Math.round((+g.downloading.progress || 0) * 100) : null;
+  box.innerHTML = g.compiled ? `
+    <div class="line"><div><div class="l">Generate lyrics when no database has them</div><div class="s">Wavelength listens to the song on this device and writes the lyrics down with time stamps. Slow (about a minute for a song) and imperfect, so it is only used as a last resort. Also applies to the Minecraft mod.</div></div><button class="tg${g.generate ? ' on' : ''}" data-act="gen-toggle" aria-pressed="${!!g.generate}" aria-label="Generate lyrics"><i></i></button></div>
+    <div class="line"><div><div class="l">Speech model</div><div class="s">${esc(cur.note || '')}${cur.ready ? ' · downloaded' : ` · ${cur.mb || '?'} MB download, once`}${dl !== null ? ` · downloading ${dl}%` : ''}</div></div>
+      <select class="inp" data-gen-model aria-label="Speech model">${(g.models || []).map(m => `<option value="${m.id}"${m.id === g.model ? ' selected' : ''}>${esc(m.id)} (${m.mb} MB${m.ready ? ', ready' : ''})</option>`).join('')}</select></div>
+    ${cur.ready || dl !== null ? '' : '<div class="line"><div><div class="s">Download the model now so the first song does not wait for it.</div></div><button class="btn" data-act="gen-download">Download</button></div>'}`
+    : `<div class="line"><div><div class="l">Generate lyrics</div><div class="s">This build of Wavelength was made without speech recognition. Build it with <code>--features whisper</code> to write lyrics down on this device.</div></div></div>`;
+  if (dl !== null) setTimeout(() => { if (curRoute === 'settings') genBoxLoad(); }, 1500);
+}
+const genPost = (url, body) => api(url, { method: 'POST', json: body, headers: { 'X-Wavelength': '1' } }).then(genBoxLoad).catch(e => toast(e.message));
+
+/* ═════════ router ═════════
 let curRoute = 'home', curArg = '', routeTok = 0, drawn = false;
 const V = { share: a => { if (R.sharing !== a) { R.sharing = a; importLink(a); } return '<h1 class="ttl">Importing…</h1>' + loader(); }, home: vHome, search: vSearch, library: vLib, local: vLocal, playlist: vPlaylist, liked: () => vPlaylist('liked'), import: vImport, downloads: vDl, settings: vSet, recap: vRecap };
 /* A redraw caused by a change (a like, a sort, an undo) keeps the rows still;
@@ -2189,7 +2229,7 @@ function draw() {
   const v = $('#view'), key = curRoute + '/' + curArg;
   v.classList.toggle('still', key === drawKey); drawKey = key;
   v.innerHTML = (V[curRoute] || vHome)(curArg); updMatch(); WLMotion.glideAll();
-  requestAnimationFrame(() => { observeRows(); WLMotion.sweepImages(v); });
+  requestAnimationFrame(() => { observeRows(); armMore(); WLMotion.sweepImages(v); if (curRoute === 'settings') genBoxLoad(); });
 }
 
 /* Resolve visible rows before they are clicked. IntersectionObserver keeps
@@ -2197,6 +2237,7 @@ function draw() {
 let rowObserver;
 function observeRows() {
   if (rowObserver) rowObserver.disconnect();
+  if (LINUX_WEBVIEW) return;   // the Linux webview resolves songs on click and hover only; opening a list must stay light
   const rows = $$('.row:not(.flip-ghost)');
   if (!rows.length) return;
   if (!('IntersectionObserver' in window)) {
@@ -2222,9 +2263,16 @@ function tileFor(r, a) {
   return hit ? hit.querySelector('.cover, .art') : null;
 }
 async function route() {
+  try { return await routeInner(); } catch (e) {
+    breadcrumb('error route ' + String((e && e.message) || e));
+    try { $('#view').innerHTML = `<div class="empty">This page could not be opened.<br><small>${esc(String((e && e.message) || e))}</small><br><br><button class="btn" data-go="home">Go home</button></div>`; } catch {}
+  }
+}
+async function routeInner() {
   const [name, ...rest] = (location.hash.slice(1) || 'home').split('/');
   const my = ++routeTok, v = $('#view');
-  curRoute = V[name] && featOn(name) ? name : 'home'; curArg = decodeURIComponent(rest.join('/'));
+  curRoute = V[name] && featOn(name) ? name : 'home';
+  try { curArg = decodeURIComponent(rest.join('/')); } catch { curArg = rest.join('/'); }
   R.plFilter = ''; drawKey = '';
   $$('.nav a,.mnav a').forEach(a => {
     const r = a.dataset.r || (a.dataset.go || '').split('/')[0];
@@ -2232,11 +2280,18 @@ async function route() {
     a.classList.toggle('on', on);
     if (on) a.setAttribute('aria-current', 'page'); else a.removeAttribute('aria-current');
   });
+  breadcrumb('open ' + curRoute + (curRoute === 'playlist' ? ' (' + playlistTracks(curArg).length + ' songs)' : ''));
   const mark = WLMotion.takeMark(), oldHdr = drawn ? $('#view .ph .cover') : null;
   const prevRoute = lastRoute, prevArg = lastArg; lastRoute = curRoute; lastArg = curArg;
   const swap = () => {
-    v.classList.remove('out', 'in'); draw();
+    v.classList.remove('out', 'in');
+    // A page that fails to draw must say so (and be reportable) instead of leaving the old page frozen on screen.
+    try { draw(); } catch (e) {
+      console.error('[draw]', curRoute, e);
+      v.innerHTML = `<div class="empty">This page could not be drawn.<br><small>${esc(String((e && e.message) || e))}</small><br><br><button class="btn" data-go="home">Go home</button></div>`;
+    }
     $('#main').scrollTo({ top: 0 });
+    breadcrumb('drawn ' + curRoute);
     if (curRoute === 'search' && document.activeElement !== $('#q')) $('#q').value = curArg;
     updateSearchClear();
     if (curRoute === 'downloads') dlPoll();
@@ -2255,6 +2310,8 @@ async function route() {
     requestAnimationFrame(() => { if (my === routeTok) v.classList.add('in'); });
   }
   drawn = true;
+  // If the page did not change (a webview that stalled), draw a plain version of a playlist instead of leaving the old page up.
+  if (curRoute === 'playlist' || curRoute === 'liked') setTimeout(() => { if (my === routeTok && !$('#view .ph')) safePlaylist(); }, 1200);
 
   // Warm the first likely click in this view while the user reads the page.
   clearTimeout(R.warmViewT);
@@ -2265,6 +2322,26 @@ async function route() {
   else if (curRoute === 'playlist') first = (S.playlists.find(p => p.id === curArg) || {}).tracks?.[0];
   if (first) R.warmViewT = setTimeout(() => { if (my === routeTok) warmTrack(first); }, 700);
 }
+/* The plainest possible playlist: no images, animation or transitions. Used when the normal page does not appear. */
+function safePlaylist() {
+  breadcrumb('error playlist fallback');
+  const id = curRoute === 'liked' ? 'liked' : curArg;
+  const pl = id === 'liked' ? { name: 'Liked Songs', tracks: S.liked } : S.playlists.find(p => p.id === id);
+  const v = $('#view'); if (!v) return;
+  if (!pl) { v.innerHTML = '<div class="empty">That playlist doesn’t exist anymore.</div>'; return; }
+  const tr = ctxList(id).slice(0, 300);
+  v.classList.remove('out'); v.classList.add('in');
+  v.innerHTML = `<h1 class="ttl">${esc(pl.name)}</h1><div class="meta">${pl.tracks.length} songs</div><div class="acts"><button class="btn acc" data-act="playall" data-id="${id}">Play</button><button class="btn" data-act="shufflepl" data-id="${id}">Shuffle</button></div><div class="list" id="pl-list">${tr.map((t, i) => `<div class="row" data-ctx="${id}" data-i="${i}" data-k="${esc(uid(t))}"><div class="n"><span>${i + 1}</span></div><div class="who"><div><div class="t">${esc(t.title)}</div><div class="a">${esc(t.artist)}</div></div></div></div>`).join('')}</div>`;
+}
+/* Page breadcrumbs go to the core's log file (wavelength.log in the data folder), so a crash leaves a trace of what was open. */
+let crumbAt = 0;
+function breadcrumb(msg) {
+  if (NATIVE) return;
+  const now = Date.now(); if (now - crumbAt < 150 && !/^(error|drawn)/.test(msg)) return; crumbAt = now;
+  try { fetch('/api/log', { method: 'POST', headers: { 'Content-Type': 'text/plain', 'X-Wavelength': '1' }, body: String(msg).slice(0, 400), keepalive: true }).catch(() => {}); } catch { /* logging must never break the page */ }
+}
+addEventListener('error', e => breadcrumb('error ' + (e.message || '') + ' @' + (e.filename || '').split('/').pop() + ':' + (e.lineno || 0)));
+addEventListener('unhandledrejection', e => breadcrumb('error promise ' + String((e.reason && e.reason.message) || e.reason || '')));
 const nav = h => { if (location.hash.slice(1) === h) route(); else location.hash = h; };
 const refreshView = () => { if (curRoute !== 'search') draw(); };
 
@@ -2506,9 +2583,13 @@ window.wlAudioPerm = ok => {
   if (!ok) { S.settings.realViz = false; save(); tapState = 'off'; $$('[data-k="realViz"]').forEach(b => b.classList.remove('on')); toast('Permission denied. Using the generated visualizer.'); return; }
   tapState = 'off'; tapSync();
 };
+/* WebKitGTK (the Linux webview) struggles with large blurs and long animated lists, so it starts in lite mode.
+   Settings > Performance > Full turns the effects back on. */
+const LINUX_WEBVIEW = /Linux/.test(navigator.userAgent) && !/Android/.test(navigator.userAgent) && /AppleWebKit/.test(navigator.userAgent) && !/Chrome|Chromium|Edg\//.test(navigator.userAgent);
 const perfLite = () => document.documentElement.dataset.perf === 'lite';
 function applyPerf() {
-  const m = S.settings.perf; document.documentElement.dataset.perf = m === 'lite' || (m !== 'full' && NATIVE) ? 'lite' : 'full';
+  document.documentElement.dataset.linux = LINUX_WEBVIEW ? '1' : '';
+  const m = S.settings.perf; document.documentElement.dataset.perf = m === 'lite' || (m !== 'full' && (NATIVE || LINUX_WEBVIEW)) ? 'lite' : 'full';
 }
 let vizRaf = 0, vizLast = 0, vizPrev = 0, vizStep = 0.035, phase = 0, disp = [];
 let vizW = 0, vizH = 0, vizDpr = 1, vizRO = null;
@@ -3204,7 +3285,22 @@ function warmTrack(t) {
   smartWarm(t);
   if (!t || t.miss || t.localId) return;
   if (t.ytId) return warmId(t.ytId);
-  resolve(t).then(() => { if (t.ytId) warmId(t.ytId); }).catch(() => {});
+  warmResolve(t);
+}
+
+/* Matching songs to YouTube is a search per song. A playlist shows a screenful of unmatched songs at once, so they
+   are looked up one at a time (and only a few ahead) instead of all together. */
+const warmResQ = [];
+let warmResBusy = false;
+function warmResolve(t) {
+  if (t._warmQueued || warmResQ.length >= 12) return;
+  t._warmQueued = true; warmResQ.push(t); pumpResolve();
+}
+function pumpResolve() {
+  if (warmResBusy || !warmResQ.length) return;
+  const t = warmResQ.shift(); warmResBusy = true;
+  resolve(t).then(() => { if (t.ytId) warmId(t.ytId); }).catch(() => {})
+    .finally(() => { t._warmQueued = false; warmResBusy = false; setTimeout(pumpResolve, 150); });
 }
 
 function warmId(ytId) {
@@ -3816,7 +3912,7 @@ function hl() {
 function toggleLike(t) {
   if (liked(t)) S.liked = S.liked.filter(x => !(uid(x) === uid(t) || (x.ytId && x.ytId === t.ytId)));
   else { S.liked.unshift({ ...t, addedAt: Date.now() }); toast('Added to Liked Songs'); }
-  saveNow(); drawSide(); hl(); if (curRoute === 'liked' || curRoute === 'library') draw();
+  save(); drawSide(); hl(); if (curRoute === 'liked' || curRoute === 'library') draw();
   if (NATIVE && R.cur && uid(R.cur) === uid(t)) { try { window.AndroidBridge.setLiked(!!liked(t)); } catch {} }
 }
 const renderQueueSmooth = () => WLMotion.flip($('#q-list'), renderQueue, { sel: ':scope > .qi' });
@@ -4013,7 +4109,7 @@ function savePl() {
   } else { pl = { id: rid(), name, cover, coverAt: Date.now(), tracks: [] }; S.playlists.push(pl); }
   M.up.filter(u => u !== cover.url).forEach(delCover);
   if (M.addTrack && !pl.tracks.some(x => uid(x) === uid(M.addTrack))) { pl.tracks.push({ ...M.addTrack, addedAt: Date.now() }); toast(`Added to ${pl.name}`); } else toast(M.id ? 'Saved' : `“${name}” created`);
-  saveNow(); closeModal(true); drawSide(); refreshView(); saveSession();
+  save(); closeModal(true); drawSide(); refreshView(); saveSession();
 }
 function addToPl(t) {
   modal(`<div class="eyebrow">Add to playlist</div><h3 style="margin-top:8px">${esc(t.title)}</h3><div style="display:grid;gap:2px">
@@ -4134,7 +4230,7 @@ function commitImport(d, cover) {
   if (d.kind === 'liked') {
     const have = new Set(S.liked.map(t => t.spId).filter(Boolean));
     const add = d.tracks.filter(t => !have.has(t.spId)).map(t => ({ ...t, addedAt: Date.now() }));
-    S.liked = [...add, ...S.liked]; saveNow(); closeModal(true); drawSide(); startMatching(add); nav('liked');
+    S.liked = [...add, ...S.liked]; save(); closeModal(true); drawSide(); startMatching(add); nav('liked');
     toast(`${add.length} liked songs added`); return;
   }
   let pl = d.kind === 'playlist' && d.id ? S.playlists.find(p => p.spId === d.id) : null;
@@ -4155,7 +4251,7 @@ function commitImport(d, cover) {
     S.playlists.push(pl);
   }
   if (oldCover && oldCover !== nextCover.url) delCover(oldCover);
-  saveNow(); closeModal(true); drawSide(); startMatching(tracks); nav('playlist/' + pl.id);
+  save(); closeModal(true); drawSide(); startMatching(tracks); nav('playlist/' + pl.id);
   const msg = d.truncated ? `${existed ? 'Updated' : 'Imported'} ${tracks.length} songs — Spotify only shares the first 100 without signing in` : `${existed ? 'Updated' : 'Imported'} ${plural(tracks.length, 'song')} — finding them on YouTube`;
   toast(msg);
 }
@@ -4411,7 +4507,7 @@ const acts = {
     if (!tracks.length) return toast('The queue is empty');
     const stamp = new Date().toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
     const pl = { id: rid(), name: `Queue · ${stamp}`, cover: { emoji: '🎶', tone: 'violet' }, tracks, createdAt: Date.now() };
-    S.playlists.push(pl); saveNow(); drawSide();
+    S.playlists.push(pl); save(); drawSide();
     toast(`Saved ${plural(tracks.length, 'song')} as “${pl.name}”`);
   },
   remote: el => { remoteTick({ to: el.dataset.to, cmd: el.dataset.c }); setTimeout(() => remoteTick(), 700); },
@@ -4507,7 +4603,7 @@ const acts = {
     const tracks = remixQueue(size, liked);
     if (!tracks.length) return toast('There are no songs to remix yet');
     const pl = { id: rid(), name, cover: { emoji: '🎛️', tone: 'violet' }, tracks, createdAt: Date.now() };
-    S.playlists.push(pl); saveNow(); closeModal(true); drawSide(); nav('playlist/' + pl.id);
+    S.playlists.push(pl); save(); closeModal(true); drawSide(); nav('playlist/' + pl.id);
     toast(`“${name}” created · ${plural(tracks.length, 'song')}`);
   },
   'pl-sort': el => {
@@ -4553,10 +4649,10 @@ const acts = {
   delpl: el => {
     const p = S.playlists.find(x => x.id === el.dataset.id); if (!p) return;
     const at = S.playlists.indexOf(p);
-    S.playlists = S.playlists.filter(x => x !== p); saveNow(); closeModal(true); drawSide(); nav('library');
+    S.playlists = S.playlists.filter(x => x !== p); save(); closeModal(true); drawSide(); nav('library');
     undoable(`Deleted “${p.name}”`, () => {
       S.playlists.splice(Math.min(at, S.playlists.length), 0, p);
-      saveNow(); drawSide(); refreshView();
+      save(); drawSide(); refreshView();
     }, () => delCover(p.cover && p.cover.url));
   },
   'toast-undo': () => { runUndo(); },
@@ -4574,17 +4670,11 @@ const acts = {
   'css-starter': () => { const t = $('#custom-css'); if (!t) return; if (!t.value.trim()) t.value = CSS_STARTER; else t.value = t.value.replace(/\s*$/, '\n\n') + CSS_STARTER; S.settings.customCss = t.value; save(); applyCustomCss(); },
   'css-clear': () => { const t = $('#custom-css'); if (t) t.value = ''; S.settings.customCss = ''; save(); applyCustomCss(); toast('Custom CSS cleared'); },
   lyrics: () => lyricsToggle(),
-  'lyr-retry': () => lyricsLoad(true),
-  'lyr-off': el => lyricsOffsetBy(parseFloat(el.dataset.d) || 0),
-  'lyr-off-reset': () => lyricsOffsetReset(),
-  'lyr-line': el => {
-    const t = +el.dataset.t;
-    if (isFinite(t)) {
-      const lrc = +((R.lyr.data || {}).offset) || 0;
-      audio.currentTime = Math.max(0, t - lrc + lyrUserOffset(R.lyr.key));
-      R.lyr.idx = -1; lyricsSync(true);
-    }
-  },
+  'lyr-retry': () => lyricsLoad({ refresh: true }),
+  'lyr-gen': () => lyricsLoad({ generate: true }),
+  'gen-toggle': el => genPost('/api/lyrics/generator', { generate: el.getAttribute('aria-pressed') !== 'true' }),
+  'gen-download': () => genPost('/api/lyrics/generator/model', {}),
+  'lyr-line': el => { const t = +el.dataset.t; if (isFinite(t)) { audio.currentTime = Math.max(0, t); R.lyr.idx = -1; lyricsSync(true); } },
   'skip-now': () => { skipNow(); },
   'skip-dismiss': () => { const k = R.skip; if (k && k.chip) { k.honored[k.chip.key] = true; } hideSkipChip(); },
   'skip-forget': () => { S.settings.skipMemory = {}; save(); toast('Forgot what it learned from your Undo taps'); },
@@ -4796,7 +4886,7 @@ const acts = {
     const i = document.createElement('input'); i.type = 'file'; i.accept = 'image/png,image/jpeg,image/webp,image/gif';
     i.onchange = () => i.files[0] && uploadImportCover(i.files[0]); i.click();
   },
-  'add-to': el => { const p = S.playlists.find(x => x.id === el.dataset.id), t = R.addT; closeModal(true); if (p.tracks.some(x => uid(x) === uid(t))) return toast('Already in ' + p.name); p.tracks.push({ ...t, addedAt: Date.now() }); saveNow(); drawSide(); toast('Added to ' + p.name); refreshView(); },
+  'add-to': el => { const p = S.playlists.find(x => x.id === el.dataset.id), t = R.addT; closeModal(true); if (p.tracks.some(x => uid(x) === uid(t))) return toast('Already in ' + p.name); p.tracks.push({ ...t, addedAt: Date.now() }); save(); drawSide(); toast('Added to ' + p.name); refreshView(); },
   'add-new': () => { const t = R.addT; closeModal(true); plModal(null, t); },
   genre: el => nav('search/' + encodeURIComponent(el.dataset.g + ' music')),
   'copy-uri': () => navigator.clipboard.writeText((R.health || {}).redirectUri || '').then(() => toast('Copied')),
@@ -5161,6 +5251,7 @@ document.addEventListener('keydown', e => {
   else if (e.key === '/' || e.code === 'Slash') { e.preventDefault(); $('#q').focus(); $('#q').select(); }
 });
 addEventListener('hashchange', route);
+document.addEventListener('change', e => { const m = e.target && e.target.closest && e.target.closest('[data-gen-model]'); if (m) genPost('/api/lyrics/generator', { model: m.value }); });
 document.addEventListener('visibilitychange', () => {
   if (document.hidden) { flushListening(); flushState(); }
   else if (R.playing) startListening();
@@ -5219,10 +5310,9 @@ new MutationObserver(() => { hideOffSettings(); if ($('#upd-box') && !R.upd) upd
   if (!THEME_GROUPS.some(g => g.items.some(([k]) => k === S.settings.theme))) S.settings.theme = 'dark';
   if (!STYLES.includes(S.settings.style)) S.settings.style = 'nothing';
   if (!['best', 'saver'].includes(S.settings.streamQuality)) S.settings.streamQuality = 'best';
-  // Recover playlists this device saved if the core came up empty (an update
-  // that moved the data folder, or a store that had to be recreated).
-  const restored = restoreStateBackup();
   if (!NATIVE && !/Electron/.test(navigator.userAgent) && 'serviceWorker' in navigator && (location.protocol === 'https:' || ['127.0.0.1', 'localhost'].includes(location.hostname))) navigator.serviceWorker.register('/sw.js').catch(() => {});
+  const restored = restoreStateBackup();
+  if (restored) toast(`Restored ${restored} playlist${restored === 1 ? '' : 's'} from this device`);
   applyTheme(); applyMotion(); applyReading(); applyVol(); drawSide(); renderQueue(); updateTransport(); syncSleep(); vizSync(); updateSearchClear(); syncNativePrefs(); watchAudioOutputs();
   applyScrollbar(); applyLayout(); applyDots(); applyCustomCss(); ovApplyAll(); applySpeed(); WLMotion.parallax($('#main'), () => $('#view .ph'));
   applyPerf(); applyFeatures(); syncShortcuts();
@@ -5232,5 +5322,4 @@ new MutationObserver(() => { hideOffSettings(); if ($('#upd-box') && !R.upd) upd
   if (!S.settings.setupDone) { S.settings.setupDone = true; save(); setTimeout(featureSetup, 350); } localLoad(); syncLoad().then(() => { syncAutoCheck(true); syncListeningNow(); }); syncPoll(); folderLoad();
   booted = true;
   launchQueue.splice(0).forEach(([c, a]) => window.wlLaunch(c, a));
-  if (restored) setTimeout(() => toast(`Restored ${plural(restored, 'playlist')} from this device’s backup`), 1200);
 })();

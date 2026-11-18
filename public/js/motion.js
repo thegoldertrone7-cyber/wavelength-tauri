@@ -32,6 +32,14 @@
      this device and the plain CSS entrances take over. */
   let adaptive = true, slow = 0, off = false;
   try { off = localStorage.getItem('wl-vt-off') === '1'; } catch {}
+  /* WebKitGTK (the Linux webview) can start a view transition and then never
+     run its update callback, which leaves the old page on screen: playlists
+     would not open. It is off there unless wl-vt-on is set, and every
+     transition below also has a watchdog that draws the page itself. */
+  const ua = (typeof navigator !== 'undefined' && navigator.userAgent) || '';
+  const linuxWebKit = /Linux/.test(ua) && !/Android/.test(ua) && /AppleWebKit/.test(ua) && !/Chrome|Chromium|Edg\//.test(ua);
+  try { if (linuxWebKit && localStorage.getItem('wl-vt-on') !== '1') off = true; } catch { if (linuxWebKit) off = true; }
+  const switchOff = () => { off = true; try { localStorage.setItem('wl-vt-off', '1'); } catch {} };
   const canVT = () => hasVT && !off && !reduced() && !document.hidden;
   function watch(t) {
     if (!adaptive) return;
@@ -51,15 +59,30 @@
     if (!canVT()) { update(); return Promise.resolve(false); }
     try { if (active) active.skipTransition(); } catch {}
     root.classList.add('vt-' + mode);
+    // The page change must happen exactly once, whatever the browser does.
+    let ran = false;
+    const run = () => { if (ran) return; ran = true; update(); };
     let t;
-    try { t = document.startViewTransition(() => { update(); }); }
-    catch { root.classList.remove('vt-' + mode); update(); return Promise.resolve(false); }
+    try { t = document.startViewTransition(run); }
+    catch { root.classList.remove('vt-' + mode); run(); return Promise.resolve(false); }
     active = t; watch(t);
     const done = () => {
       if (active !== t) return;           // a newer transition owns the classes now
       active = null; root.classList.remove('vt-page', 'vt-player'); clearNames();
     };
-    t.finished.then(done, done);
+    // Watchdog 1: the browser never called back. Draw the page ourselves, stop using transitions here.
+    const noCallback = setTimeout(() => {
+      if (ran) return;
+      run(); try { t.skipTransition(); } catch {} done(); switchOff();
+    }, 400);
+    // Watchdog 2: the callback ran but the transition never finished and may be covering the page.
+    const stuck = setTimeout(() => {
+      if (active !== t) return;
+      try { t.skipTransition(); } catch {} done(); switchOff();
+    }, 2500);
+    t.ready.then(() => clearTimeout(noCallback), () => { clearTimeout(noCallback); run(); });
+    const fin = () => { clearTimeout(stuck); clearTimeout(noCallback); done(); };
+    t.finished.then(fin, fin);
     return t.finished.then(() => true, () => false);
   }
 

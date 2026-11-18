@@ -6,10 +6,9 @@ you restart, and the signature is checked before anything is touched.
 
 How it fits together:
 
-    git tag v2.9.1 && git push --tags
+    git tag v2.9.3 && git push --tags
       → .github/workflows/release.yml builds macOS (universal), Windows, Linux x64 and Linux arm64,
-        signs each updater bundle, packages a Flatpak (with yt-dlp and ffmpeg bundled), uploads
-        installers and latest.json to a draft release, then publishes it
+        signs each updater bundle, uploads installers and latest.json to a draft release, then publishes it
       → installed apps read  https://github.com/OWNER/REPO/releases/latest/download/latest.json
         and install the bundle for their platform if the version is newer
 
@@ -37,9 +36,9 @@ publish a release that nobody can install.
 
 ## Shipping an update
 
-    npm run version:bump 2.9.1      # package.json, tauri.conf.json, Cargo.toml, Cargo.lock, api.rs
-    # add "## 2.9.1" to CHANGELOG.md (it becomes the release notes shown in Settings → Updates)
-    git commit -am "2.9.1" && git tag v2.9.1 && git push && git push --tags
+    npm run version:bump 2.9.3      # package.json, tauri.conf.json, Cargo.toml, Cargo.lock, api.rs
+    # add "## 2.9.3" to CHANGELOG.md (it becomes the release notes shown in Settings → Updates)
+    git commit -am "2.9.3" && git tag v2.9.3 && git push && git push --tags
 
 The workflow checks that the tag, `package.json`, `tauri.conf.json` and `Cargo.toml` agree before building.
 Builds run one platform at a time on purpose, because each one merges itself into the same `latest.json`.
@@ -54,5 +53,5 @@ The first release after setup has to be installed by hand; every later one arriv
 - **Linux**: in-app updates work for the AppImage. `.deb`/`.rpm`/Flatpak installs update through their own
   channels.
 - **Android** is the separate Kotlin app and keeps its own update channel.
-- Do not run `cargo` with `--locked` until you have committed the `Cargo.lock` that the first build produces
-  (this release added the updater plugin's dependencies).
+- `Cargo.lock` is committed and kept up to date; `cargo test --locked` passes. Regenerate and commit it after
+  changing dependencies.

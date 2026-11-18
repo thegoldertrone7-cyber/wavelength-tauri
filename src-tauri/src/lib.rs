@@ -1,6 +1,8 @@
 pub mod api;
 pub mod audio;
 pub mod bridge;
+pub mod diag;
+pub mod generator;
 pub mod lyrics;
 pub mod store;
 pub mod updater;
@@ -58,6 +60,20 @@ fn boot(
 }
 
 pub fn run() {
+    diag::install_panic_hook(data_dir());
+    // WebKitGTK's DMA-BUF renderer is the usual cause of blank windows and web-process crashes on Linux (NVIDIA,
+    // Wayland, some Mesa builds). Turning it off costs little. An explicit setting from the user always wins.
+    #[cfg(target_os = "linux")]
+    {
+        for (k, v) in [("WEBKIT_DISABLE_DMABUF_RENDERER", "1")] {
+            if std::env::var_os(k).is_none() {
+                std::env::set_var(k, v);
+            }
+        }
+        if std::env::var_os("WL_SAFE_RENDER").is_some() && std::env::var_os("WEBKIT_DISABLE_COMPOSITING_MODE").is_none() {
+            std::env::set_var("WEBKIT_DISABLE_COMPOSITING_MODE", "1");
+        }
+    }
     let headless = std::env::args().any(|a| a == "--headless")
         || std::env::var("WL_HEADLESS").is_ok();
 
