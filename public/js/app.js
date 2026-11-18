@@ -2219,7 +2219,7 @@ async function genBoxLoad() {
 }
 const genPost = (url, body) => api(url, { method: 'POST', json: body, headers: { 'X-Wavelength': '1' } }).then(genBoxLoad).catch(e => toast(e.message));
 
-/* ═════════ router ═════════
+/* ═════════ router ═════════ */
 let curRoute = 'home', curArg = '', routeTok = 0, drawn = false;
 const V = { share: a => { if (R.sharing !== a) { R.sharing = a; importLink(a); } return '<h1 class="ttl">Importing…</h1>' + loader(); }, home: vHome, search: vSearch, library: vLib, local: vLocal, playlist: vPlaylist, liked: () => vPlaylist('liked'), import: vImport, downloads: vDl, settings: vSet, recap: vRecap };
 /* A redraw caused by a change (a like, a sort, an undo) keeps the rows still;
