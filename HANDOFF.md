@@ -1,22 +1,24 @@
-# Handoff — 2.9.3 (ported 2.10 feature set on the 2.9.2 base)
+# Handoff — 2.9.4 (ported 2.10 feature set on the 2.9.2 base)
 
-2.9.3 takes the features that were being prepared as 2.10.0 and ports them onto the hardened 2.9.2 release.
+2.9.4 takes the features that were being prepared as 2.10.0 and ports them onto the hardened 2.9.2 release.
 The 2.9.1/2.9.2 durability, lyrics, sync, updater and Flatpak fixes are all present; none were dropped.
 
 ## Verified for this release
 
-- `npm test`: 43/43 (20 skipper + 8 bridge + 11 lyrics + 4 motion).
+- `npm test`: 45/45 (20 skipper + 8 bridge + 11 lyrics + 4 motion + 2 router).
 - `cargo test` and `cargo test --locked`: 38/38 (store recovery/durability, lyrics service and generation,
   bridge 14, diag). `Cargo.lock` is committed and up to date — do not delete it.
 - `node --check` clean on all 18 JS files; `git diff --check` clean.
-- Versions consistent at 2.9.3 in `package.json`, `package-lock.json`, `src-tauri/Cargo.toml`,
+- Versions consistent at 2.9.4 in `package.json`, `package-lock.json`, `src-tauri/Cargo.toml`,
   `src-tauri/tauri.conf.json`, `api.rs::VERSION` and the release workflow's tag gate.
 - Updater public key present in `tauri.conf.json`; endpoints point at the public GitHub `latest.json`.
 - Flatpak job in `.github/workflows/release.yml` plus the standalone `flatpak.yml`; `scripts/build-flatpak.sh`
   is the Tauri/GNOME build (no Electron).
 
-## What shipped in 2.9.3
+## What shipped in 2.9.4
 
+- The 2.9.3 macOS page-open failure is fixed: the router banner is closed again, so `routeTok` is defined
+  and every page opens. A regression test guards the banner/declaration pair.
 - Native four-provider lyrics service shared by the page (`/api/lyrics`) and the Minecraft mod
   (`/api/bridge/lyrics`), with durable on-disk cache, translations, match info and a per-song timing control.
 - Opt-in on-device Whisper lyric generator behind `cargo build --features whisper`. Default builds do not
@@ -46,5 +48,5 @@ The 2.9.1/2.9.2 durability, lyrics, sync, updater and Flatpak fixes are all pres
 - App: `thegoldertrone7-cyber/wavelength-tauri`; mod: `thegoldertrone7-cyber/wavelength-link`.
 - Ports: HTTP core 47823, LAN sync 47824, UDP discovery 38423.
 - Tauri identifier `app.wavelength.music.tauri` (Flatpak id `app.wavelength.music`).
-- Tag `v2.9.3` and push to run the public release workflow; it publishes macOS/Windows/Linux bundles,
+- Tag `v2.9.4` and push to run the public release workflow; it publishes macOS/Windows/Linux bundles,
   signatures, `latest.json` and the Flatpak, gated on the version match and updater key.

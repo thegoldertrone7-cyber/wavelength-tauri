@@ -1,5 +1,11 @@
 # Changelog
 
+## 2.9.4
+
+- **Fixed a startup/page-open failure on macOS.** A missing `*/` in the router section of the page script commented out
+  the route state declaration, so WebKit reported “This page could not be opened. Can't find variable:routeTok”.
+  The header is closed again and a regression test guards it. Everything else in 2.9.3 is unchanged.
+
 ## 2.9.3
 
 This release brings the features that were being prepared for 2.10.0 onto the hardened 2.9.2 base, so none of

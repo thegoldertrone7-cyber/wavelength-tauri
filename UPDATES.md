@@ -6,7 +6,7 @@ you restart, and the signature is checked before anything is touched.
 
 How it fits together:
 
-    git tag v2.9.3 && git push --tags
+    git tag v2.9.4 && git push --tags
       → .github/workflows/release.yml builds macOS (universal), Windows, Linux x64 and Linux arm64,
         signs each updater bundle, uploads installers and latest.json to a draft release, then publishes it
       → installed apps read  https://github.com/OWNER/REPO/releases/latest/download/latest.json
@@ -36,9 +36,9 @@ publish a release that nobody can install.
 
 ## Shipping an update
 
-    npm run version:bump 2.9.3      # package.json, tauri.conf.json, Cargo.toml, Cargo.lock, api.rs
-    # add "## 2.9.3" to CHANGELOG.md (it becomes the release notes shown in Settings → Updates)
-    git commit -am "2.9.3" && git tag v2.9.3 && git push && git push --tags
+    npm run version:bump 2.9.4      # package.json, tauri.conf.json, Cargo.toml, Cargo.lock, api.rs
+    # add "## 2.9.4" to CHANGELOG.md (it becomes the release notes shown in Settings → Updates)
+    git commit -am "2.9.4" && git tag v2.9.4 && git push && git push --tags
 
 The workflow checks that the tag, `package.json`, `tauri.conf.json` and `Cargo.toml` agree before building.
 Builds run one platform at a time on purpose, because each one merges itself into the same `latest.json`.
