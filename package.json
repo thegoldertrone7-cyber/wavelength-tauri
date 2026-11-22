@@ -1,7 +1,7 @@
 {
   "name": "wavelength-tauri",
   "productName": "Wavelength",
-  "version": "2.9.6",
+  "version": "2.9.7",
   "description": "Wavelength — Tauri 2 shell, Rust core, native audio, Minecraft game link, GitHub updates.",
   "author": "Wavelength",
   "private": true,

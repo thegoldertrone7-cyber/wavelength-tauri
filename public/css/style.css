@@ -2045,3 +2045,42 @@ html:not([data-viz-size=full]) .np.video-on #viz{display:none!important}
 [data-style=win11] .np-video{--vid-r:8px}[data-style=kde] .np-video{--vid-r:4px}[data-style=macos] .np-video{--vid-r:14px}
 [data-style=gnome] .np-video{--vid-r:18px}[data-style=classic] .np-video{--vid-r:12px}[data-style=glass] .np-video{--vid-r:26px}[data-style=oneui] .np-video{--vid-r:36px}
 @media (max-width:860px){.np-video{width:min(92vw,520px);max-height:30vh}}
+
+/* ══════════════════════════════════════════════
+   2.10 — WINDOWS 11 refinements
+   Segoe UI Variable, no stacked blur layers (they were the cost of scrolling on WebView2), Fluent selection pill,
+   keyboard focus ring, press and hover states.
+══════════════════════════════════════════════ */
+[data-style=win11]{
+  --font-b:'Segoe UI Variable Text','Segoe UI Variable','Segoe UI',system-ui,sans-serif;
+  --font-d:'Segoe UI Variable Display','Segoe UI Variable','Segoe UI',system-ui,sans-serif;
+  --font-m:'Segoe UI Variable Text','Segoe UI',system-ui,sans-serif;
+}
+[data-style=win11] .card{background:color-mix(in srgb,var(--card) 94%,var(--bg));border:1px solid var(--line);backdrop-filter:none;-webkit-backdrop-filter:none}
+[data-style=win11] .player{background:color-mix(in srgb,var(--card) 92%,var(--bg));border:1px solid var(--line);backdrop-filter:blur(20px);-webkit-backdrop-filter:blur(20px);box-shadow:0 8px 28px -10px rgba(0,0,0,.55)}
+[data-style=win11] .nav a{position:relative;transition:background .15s ease}
+[data-style=win11] .nav a:hover{background:color-mix(in srgb,var(--text) 7%,transparent)}
+[data-style=win11] .nav a.on::before{content:'';position:absolute;left:2px;top:24%;bottom:24%;width:3px;border-radius:3px;background:var(--accent)}
+[data-style=win11] .btn{transition:background .12s ease,transform .08s ease,border-color .12s ease}
+[data-style=win11] .btn:hover{background:color-mix(in srgb,var(--text) 9%,var(--card2))}
+[data-style=win11] .btn:active{transform:scale(.97)}
+[data-style=win11] .btn.solid:hover{filter:brightness(1.08)}
+[data-style=win11] .row:hover{background:color-mix(in srgb,var(--text) 6%,transparent)}
+[data-style=win11] .row.on{background:color-mix(in srgb,var(--accent) 14%,transparent)}
+[data-style=win11] :focus-visible{outline:2px solid var(--accent);outline-offset:2px;border-radius:6px}
+[data-style=win11] .sheet{border:1px solid var(--line);box-shadow:0 24px 60px -12px rgba(0,0,0,.6)}
+[data-style=win11] .tile,[data-style=win11] .card,[data-style=win11] .btn,[data-style=win11] .row{transition-duration:.12s}
+[data-style=win11] ::-webkit-scrollbar{width:14px;height:14px}
+[data-style=win11] ::-webkit-scrollbar-thumb{background:color-mix(in srgb,var(--text) 28%,transparent);border-radius:8px;border:4px solid transparent;background-clip:content-box}
+[data-style=win11] ::-webkit-scrollbar-thumb:hover{background:color-mix(in srgb,var(--text) 45%,transparent);background-clip:content-box}
+[data-style=win11] ::-webkit-scrollbar-track{background:transparent}
+
+/* 2.10: song editor — per-field reset links and the lyrics transcript */
+.se-lbl{display:flex;align-items:baseline;justify-content:space-between;gap:10px}
+.lnk{background:none;border:0;padding:2px 0;color:var(--accent);font:600 12px var(--font-b);cursor:pointer}
+.lnk:hover{text-decoration:underline}
+.se-lyrics{min-height:120px;max-height:34vh;resize:vertical;font:13px/1.5 var(--font-m);white-space:pre-wrap}
+
+/* 2.10: Amazon import drop target */
+.amz.drag{outline:2px dashed var(--accent);outline-offset:-6px}
+.amz label.btn{cursor:pointer}

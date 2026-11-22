@@ -24,7 +24,7 @@ pub const LAN_PORT: u16 = 47824;
 /// UDP port the Android app broadcasts `WAVELENGTH_DISCOVER_V1` on.
 pub const DISCOVERY_PORT: u16 = 38423;
 const DISCOVERY_PROBE: &[u8] = b"WAVELENGTH_DISCOVER_V1";
-pub const VERSION: &str = "2.9.6-tauri";
+pub const VERSION: &str = "2.9.4-tauri";
 
 pub struct AppState {
     pub store: Arc<Store>,
@@ -96,6 +96,9 @@ pub fn router(state: Arc<AppState>, public_dir: PathBuf) -> Router {
         .route("/api/related/{id}", get(related))
         .route("/api/stream/{id}", get(stream))
         .route("/api/video/{id}", get(video))
+        .route("/api/desktop/theme", post(desktop_theme))
+        .route("/api/media/state", post(media_state))
+        .route("/api/media/poll", get(media_poll))
         .route("/api/warm/{id}", get(warm))
         .route("/api/cached/{id}", get(cached))
         .route("/api/local", get(local_list))
@@ -676,6 +679,23 @@ fn resolve_video_sync(id: &str, alt: bool) -> Result<String, String> {
         .find(|l| l.starts_with("http"))
         .map(|s| s.trim().to_string())
         .ok_or_else(|| "No video stream available".to_string())
+}
+
+/// The page tells the shell whether it is light or dark so the window frame matches.
+async fn desktop_theme(Json(b): Json<Value>) -> Json<Value> {
+    crate::desktop::set_theme(b.get("dark").and_then(|v| v.as_bool()).unwrap_or(true));
+    Json(json!({ "ok": true }))
+}
+
+/// What is playing, for the system media controls.
+async fn media_state(Json(b): Json<crate::desktop::MediaState>) -> Json<Value> {
+    crate::desktop::media_update(b);
+    Json(json!({ "ok": true }))
+}
+
+/// Media-key and system-overlay presses since the last poll.
+async fn media_poll() -> Json<Value> {
+    Json(json!({ "events": crate::desktop::media_drain() }))
 }
 
 /// POST /api/log: the page's breadcrumbs and errors, appended to wavelength.log.

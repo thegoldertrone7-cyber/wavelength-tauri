@@ -1,6 +1,18 @@
 # Changelog
 
-## 2.9.6
+## Unreleased
+
+- **Amazon Music import.** Import → Amazon Music playlist takes a CSV, TSV, TXT, JSON or M3U export (from a playlist
+  converter) by file picker or drag and drop, reads header columns (Track name, Artist, Album, Duration), and has no
+  100-song cap. Songs are matched on YouTube in the background. Pasting spreadsheet rows works too.
+- **Song details menu.** Each field has its own reset (title, artist, image) plus Restore all, and a lyrics transcript
+  box: plain text, or lines with [mm:ss.xx] stamps that scroll in time. Settings keeps one "Reset all edits".
+- **Windows 11.** Media keys and the Windows media overlay now work (system media controls through souvlaki, MPRIS on
+  Linux), the title bar follows the app's light/dark mode, no white flash on start, timers are no longer throttled
+  when the window is minimised, and the Windows 11 style is lighter (no stacked blur), with a selection pill,
+  focus ring and Fluent scrollbars. Windows opens in the Windows 11 style once; any other style stays if chosen.
+- **Android.** Clearer error when the phone's YouTube engine fails, and an opt-in "Backup playback servers" setting
+  that asks a public Piped server for the audio. The underlying fix (a newer NewPipeExtractor) is in the Android app.
 
 - **Reset edited song details.** Settings → Edited song details resets edited titles, artists or cover art on their
   own, or everything at once. Resets restore the stored originals everywhere the song appears and can be undone.
@@ -8,8 +20,6 @@
   bass end no longer collapses into a few identical bars, readings arrive about 22 times a second and are eased at
   the frame rate, the waveform styles use the real output samples, and a webview without Web Audio now falls back to
   the engine's data instead of showing a flat line.
-
-## 2.9.5
 
 - **Smarter recap artists.** Songs are split into their individual artists, so "Hazbin Hotel, Blake Roman" counts for
   Hazbin Hotel and for Blake Roman, and no combined row appears next to Blake Roman. Variants (Cast, Topic, VEVO,

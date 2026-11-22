@@ -78,7 +78,7 @@ android {
 dependencies {
   implementation 'androidx.appcompat:appcompat:1.6.1'
   implementation 'androidx.webkit:webkit:1.11.0'
-  implementation 'com.github.teamnewpipe:NewPipeExtractor:0.26.5'
+  implementation 'com.github.teamnewpipe:NewPipeExtractor:0.27.1'
   coreLibraryDesugaring 'com.android.tools:desugar_jdk_libs_nio:2.1.5'
 }
 EOF

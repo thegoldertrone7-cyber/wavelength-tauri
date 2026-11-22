@@ -163,7 +163,7 @@ function rememberSearch(q) {
 }
 
 /* ═════════ state ═════════ */
-const DEF = { playlists: [], liked: [], history: [], overrides: {}, listening: { v: 1, devices: {} }, settings: { theme: 'dark', style: 'nothing', accent: null, viz: true, vizStyle: 'matrix', vizSize: 'md', vizSizePrev: 'md', lockVisualizer: true, autoplay: true, gapless: true, resume: true, motion: 'system', readSize: 'default', contrast: false, sleepUntil: 0, quality: 192, streamQuality: 'best', volume: 0.8, smartVolume: false, noAi: false, blockedArtists: [], skipCredits: false, skipIntro: 'off', skipOutro: 'off', skipBreaks: 'off', skipSure: 'balanced', skipCrowd: true, skipSilence: true, skipMemory: {}, scrollbar: 'pill', navPos: 'left', dockPos: 'bottom', contentWidth: 'full', dotBg: false, dotOpacity: 22, dotScale: 22, customCss: '', netMode: 'auto', autoUpdate: true, updCheckedAt: 0, shuffleSmart: true, stayInList: true, syncOnOpen: false, syncDaily: false, syncControl: false, syncLast: 0, lockLayout: 'art', lockTheme: 'accent', lockControls: true, lockHide: 9, lockHint: true, pinned: [], perf: 'auto', realViz: false, off: [], setupDone: false, vizHidden: [], discord: false, discordId: '', lyrics: true, headphonesPause: true, plSort: 'added', plView: 'list', swipeRows: true, speed: 1, npVideo: false, npVideoBig: false, plSafe: false } };
+const DEF = { playlists: [], liked: [], history: [], overrides: {}, lyricsCustom: {}, listening: { v: 1, devices: {} }, settings: { theme: 'dark', style: 'nothing', accent: null, viz: true, vizStyle: 'matrix', vizSize: 'md', vizSizePrev: 'md', lockVisualizer: true, autoplay: true, gapless: true, resume: true, motion: 'system', readSize: 'default', contrast: false, sleepUntil: 0, quality: 192, streamQuality: 'best', volume: 0.8, smartVolume: false, noAi: false, blockedArtists: [], skipCredits: false, skipIntro: 'off', skipOutro: 'off', skipBreaks: 'off', skipSure: 'balanced', skipCrowd: true, skipSilence: true, skipMemory: {}, scrollbar: 'pill', navPos: 'left', dockPos: 'bottom', contentWidth: 'full', dotBg: false, dotOpacity: 22, dotScale: 22, customCss: '', netMode: 'auto', autoUpdate: true, updCheckedAt: 0, shuffleSmart: true, stayInList: true, syncOnOpen: false, syncDaily: false, syncControl: false, syncLast: 0, lockLayout: 'art', lockTheme: 'accent', lockControls: true, lockHide: 9, lockHint: true, pinned: [], perf: 'auto', realViz: false, off: [], setupDone: false, vizHidden: [], discord: false, discordId: '', lyrics: true, headphonesPause: true, plSort: 'added', plView: 'list', swipeRows: true, speed: 1, npVideo: false, npVideoBig: false, plSafe: false, backupStreams: false } };
 
 /* ── Pinned playlists: quick access in the sidebar, on Home, with Alt+1..9 and Android launcher shortcuts ── */
 const pinnedPls = () => (Array.isArray(S.settings.pinned) ? S.settings.pinned : []).map(id => S.playlists.find(p => p.id === id)).filter(Boolean);
@@ -993,9 +993,21 @@ async function lyricsDirect(t, g, dur) {
   };
 }
 
+/* Lyrics you typed or pasted for a song. Plain text scrolls as a block; lines starting with [mm:ss.xx] time stamps
+   (LRC) scroll in time, and the usual timing nudge works on them. They win over anything the lyrics service finds. */
+function customLyricsData(c) {
+  const text = String(c.text || '');
+  const meta = LY.parseLrcMeta ? LY.parseLrcMeta(text) : { lines: [], offset: 0 };
+  const synced = meta.lines.length >= 2 ? meta.lines : [];
+  const plain = synced.length ? '' : text.trim();
+  return { synced, offset: meta.offset || 0, plain, instrumental: false, found: true, cached: true, source: 'Your transcript',
+    matched: null, pending: false, stage: '', progress: 0, label: '', generated: false, canGenerate: false, generateError: '', custom: true };
+}
+const hasCustomLyrics = t => !!(t && S.lyricsCustom && S.lyricsCustom[uid(t)] && String(S.lyricsCustom[uid(t)].text || '').trim());
 async function lyricsFor(t, opt = {}) {
   const key = uid(t);
   if (!key) throw new Error('This song has no id');
+  if (hasCustomLyrics(t) && !opt.generate) return customLyricsData(S.lyricsCustom[key]);
   const refresh = !!opt.refresh, generate = !!opt.generate;
   if (R.lyrCache.has(key) && !refresh && !generate && !opt.pending) return R.lyrCache.get(key);
   if (refresh) { R.lyrCache.delete(key); if (!generate) opt.generate = false; }
@@ -1209,6 +1221,7 @@ function applyReading() {
 function applyTheme() {
   const { theme, accent } = S.settings, root = document.documentElement;
   root.dataset.theme = theme; root.dataset.style = S.settings.style || 'nothing'; root.dataset.mode = themeMode();
+  syncFrame();
   const a = accent || defAccent();
   const rgb = hexRgb(a) || { r: 215, g: 25, b: 33 };
   root.style.setProperty('--accent', a);
@@ -1384,7 +1397,7 @@ function editSong(t) {
   t = t || R.cur;
   if (!t) return toast('Play or pick a song first');
   const key = ovKey(t), e = S.overrides[key];
-  SE = { key, sp: t.spId || '', spArt: t.spArt || '', yt: t.ytId || '', title: t.title || '', artist: t.artist || '', art: t.art || '', up: [],
+  SE = { key, sp: t.spId || '', spArt: t.spArt || '', yt: t.ytId || '', title: t.title || '', artist: t.artist || '', art: t.art || '', up: [], lyrics: (S.lyricsCustom && S.lyricsCustom[key] && S.lyricsCustom[key].text) || '',
     orig: e ? { ...e.o } : { title: t.title || '', artist: t.artist || '', art: t.art || '' }, had: e ? { ...e } : null };
   const u = SE.art.startsWith('http') ? SE.art : '';
   modal(`<div class="eyebrow">Edit song</div><h3 class="imp-title">Song details</h3>
@@ -1393,15 +1406,37 @@ function editSong(t) {
         <button class="btn sm" data-act="se-orig-art">Original image</button>
         <button class="btn sm" data-act="se-no-art">No image</button>
         ${t.spId || t.spArt ? '<button class="btn sm" data-act="se-spotify">Spotify image</button>' : ''}</div></div>
-    <label class="set-label" for="se-title">Title</label>
+    <div class="se-lbl"><label class="set-label" for="se-title">Title</label><button class="lnk" data-act="se-reset-field" data-f="title">Reset title</button></div>
     <input class="inp" id="se-title" value="${esc(SE.title)}" autocomplete="off" maxlength="200">
-    <label class="set-label" for="se-artist">Artist</label>
+    <div class="se-lbl"><label class="set-label" for="se-artist">Artist</label><button class="lnk" data-act="se-reset-field" data-f="artist">Reset artist</button></div>
     <input class="inp" id="se-artist" value="${esc(SE.artist)}" autocomplete="off" maxlength="200">
     <label class="set-label" for="se-art-url">Image link</label>
     <input class="inp" id="se-art-url" value="${esc(u)}" placeholder="Paste an image link, or upload one above" autocomplete="off" spellcheck="false">
-    <p class="mut se-note">Changes apply everywhere this song appears on this device${e ? '' : ', and you can restore the original any time'}.</p>
-    <div class="acts end">${e ? '<button class="btn dng" data-act="se-reset">Restore original</button>' : ''}<button class="btn" data-act="close-modal">Cancel</button><button class="btn solid" data-act="se-save">Save</button></div>`, 'song-edit');
+    <div class="se-lbl"><label class="set-label" for="se-lyrics">Lyrics transcript</label><button class="lnk" data-act="se-lyrics-clear">Remove transcript</button></div>
+    <textarea class="inp se-lyrics" id="se-lyrics" rows="6" spellcheck="false" placeholder="Type or paste the lyrics for this song. Start lines with [mm:ss.xx] (for example [01:12.50]) to make them scroll in time; without time stamps they show as plain text.">${esc(SE.lyrics)}</textarea>
+    <p class="mut se-note" id="se-ly-note"></p>
+    <p class="mut se-note">Changes apply everywhere this song appears on this device. Reset title, artist or the image on its own, or restore everything at once.</p>
+    <div class="acts end">${e ? '<button class="btn dng" data-act="se-reset">Restore all original details</button>' : ''}<button class="btn" data-act="close-modal">Cancel</button><button class="btn solid" data-act="se-save">Save</button></div>`, 'song-edit');
+  seLyricsNote();
+  const ly = $('#se-lyrics'); if (ly) ly.addEventListener('input', seLyricsNote);
 }
+/* Tells you how the transcript will behave: timed, plain, or empty. */
+function seLyricsNote() {
+  const el = $('#se-ly-note'), ta = $('#se-lyrics'); if (!el || !ta) return;
+  const text = ta.value;
+  if (!text.trim()) { el.textContent = 'No transcript. Lyrics come from the lyrics service when it has the song.'; return; }
+  const m = LY.parseLrcMeta ? LY.parseLrcMeta(text) : { lines: [] };
+  const lines = text.split(/\r?\n/).filter(l => l.trim()).length;
+  el.textContent = m.lines.length >= 2 ? `Timed lyrics: ${m.lines.length} lines will scroll in time with the song.` : `Plain lyrics: ${lines} line${lines === 1 ? '' : 's'}. Add [mm:ss.xx] before lines to make them scroll in time.`;
+}
+/* Put one field back to the original in the form; Save makes it permanent. */
+function seResetField(f) {
+  if (!SE) return;
+  if (f === 'title') { const el = $('#se-title'); if (el) el.value = SE.orig.title || ''; }
+  else if (f === 'artist') { const el = $('#se-artist'); if (el) el.value = SE.orig.artist || ''; }
+  seFocus();
+}
+
 /* After a helper button, put the cursor back in the title so Enter confirms the edit. */
 const seFocus = () => { const t = $('#se-title'); if (t) { t.focus(); const n = t.value.length; try { t.setSelectionRange(n, n); } catch {} } };
 function sePreview() { const el = $('#se-art'); if (el && SE) el.innerHTML = art({ art: SE.art }); }
@@ -1409,6 +1444,16 @@ function seSave() {
   if (!SE) return;
   const title = ($('#se-title')?.value || '').trim(), artist = ($('#se-artist')?.value || '').trim();
   if (!title) return toast('A song needs a title');
+  // Transcript first: it is stored apart from the other details, so saving it never touches titles, artists or covers.
+  const lyText = ($('#se-lyrics')?.value || '').replace(/\r\n/g, '\n').trim();
+  S.lyricsCustom = S.lyricsCustom || {};
+  const hadLy = S.lyricsCustom[SE.key] ? S.lyricsCustom[SE.key].text : '';
+  if (lyText !== (hadLy || '')) {
+    if (lyText) S.lyricsCustom[SE.key] = { text: lyText, at: Date.now() }; else delete S.lyricsCustom[SE.key];
+    R.lyrCache.delete(SE.key);
+    if (R.lyr && R.lyr.on && R.cur && uid(R.cur) === SE.key) lyricsLoad();
+    save();
+  }
   const key = SE.key, o = SE.orig, prev = S.overrides[key] ? { ...S.overrides[key] } : null;
   const to = { title, artist, art: SE.art || '' };
   const e = { yt: SE.yt, o: { ...o } };
@@ -1467,11 +1512,10 @@ function ovReset(kinds) {
 }
 function editsBoxHTML() {
   const c = ovCounts(), none = !c.songs;
-  const row = (k, label, sub) => `<div class="line"><div><div class="l">${label}</div><div class="s">${c[k] ? plural(c[k], 'song') + ' with a changed ' + sub : 'Nothing changed'}</div></div><button class="btn" data-act="ov-reset" data-k="${k}"${c[k] ? '' : ' disabled'}>Reset</button></div>`;
   return `<div class="box rise" style="--i:3" id="set-edits"><h2>Edited song details</h2>
-    <p class="mut">Titles, artists and cover art you changed with Edit. Each reset puts the original back everywhere that song appears, and you can undo it right after.</p>
-    ${row('title', 'Titles', 'title')}${row('artist', 'Artists', 'artist')}${row('art', 'Cover art', 'cover')}
-    <div class="line"><div><div class="l">Everything</div><div class="s">${none ? 'No edited songs' : 'Restores all ' + plural(c.songs, 'edited song') + ' to their original title, artist and cover'}</div></div><button class="btn dng" data-act="ov-reset" data-k="all"${none ? ' disabled' : ''}>Reset all edits</button></div></div>`;
+    <p class="mut">Change a song's title, artist, cover or lyrics from its menu → Edit details; each field has its own reset there. This puts every edited song back at once.</p>
+    <div class="line"><div><div class="l">Reset all edits</div><div class="s">${none ? 'No edited songs' : `${plural(c.songs, 'edited song')}: ${plural(c.title, 'title')}, ${plural(c.artist, 'artist')}, ${plural(c.art, 'cover')}. Your typed lyrics are kept.`}</div></div><button class="btn dng" data-act="ov-reset" data-k="all"${none ? ' disabled' : ''}>Reset all</button></div>
+  </div>`;
 }
 function songRestore(key) {
   const e = S.overrides[key]; if (!e) return;
@@ -1865,11 +1909,32 @@ function vLocal() {
     <div class="list">${tracks.length ? rows(tracks, 'local') : `<div class="empty">No local music yet. Add FLAC, WAV, AIFF, ALAC, M4A, MP3, OGG or Opus files. Lossless files stay lossless.<div class="acts"><button class="btn solid" data-act="local-pick">${I.plus}Add audio files</button></div></div>`}</div>`;
 }
 
+/* Amazon Music has no way for other apps to read a playlist, so this takes the song list instead: a CSV, TXT or JSON
+   export from a playlist converter, or songs pasted below. Any length works; matching on YouTube runs in the background. */
+function amazonBoxHTML(i) {
+  return `<div class="box rise amz" style="--i:${i}" id="amz-box" ondragover="event.preventDefault();this.classList.add('drag')" ondragleave="this.classList.remove('drag')" ondrop="event.preventDefault();this.classList.remove('drag');importFile(event.dataTransfer.files[0])">
+    <h2>Amazon Music playlist</h2>
+    <p class="mut">Amazon does not let apps read your playlists, so Wavelength imports the song list instead. Export the playlist to a file with a playlist converter such as TuneMyMusic or Soundiiz (choose CSV or TXT), then drop the file here. There is no 100-song limit: a 700-song playlist imports in one go and Wavelength finds the songs on YouTube in the background.</p>
+    <div class="inline"><label class="btn solid" for="amz-file">${I.import}Choose a file</label><input type="file" id="amz-file" accept=".csv,.tsv,.txt,.m3u,.m3u8,.json,text/csv,text/plain" hidden onchange="importFile(this.files[0]);this.value=''"><span class="meta">or drop it on this box</span></div>
+    <p class="meta" style="margin-top:12px">Reads CSV, semicolon or tab separated files with a header row (Track name, Artist, Album, Duration), JSON lists, M3U and plain “Artist - Song” lines. You can also copy rows out of a spreadsheet and paste them in the box below.</p></div>`;
+}
+async function importFile(file) {
+  if (!file) return;
+  if (file.size > 8 * 1024 * 1024) return toast('That file is too large for a song list');
+  let text = '';
+  try { text = await file.text(); } catch { return toast('Could not read that file'); }
+  const tracks = parseTrackList(text, 'artist');
+  if (!tracks.length) return toast('No songs found in that file. It needs a Title (or Track name) column, or one “Artist - Song” per line.');
+  const name = (file.name || 'Imported playlist').replace(/\.[^.]+$/, '').replace(/[_]+/g, ' ').trim() || 'Imported playlist';
+  openImportPreview({ kind: 'list', id: 'list-' + rid(), name, tracks, image: null, truncated: false }, 'amazon');
+  setImpStatus(`Read ${plural(tracks.length, 'song')} from ${file.name}. Preview the import below.`, 'ok');
+}
 function vImport() {
   if (NATIVE) {
     return `<h1 class="ttl">Import</h1>
       <div class="imp-status" id="imp-status" role="status" aria-live="polite"></div>
-      <div class="box rise"><h2>Paste a list of songs</h2><p class="mut">One per line. Numbered lists, bullets, CSV rows and M3U files work too. Wavelength matches each song on YouTube before saving.</p>
+      ${amazonBoxHTML(0)}
+      <div class="box rise" style="--i:1"><h2>Paste a list of songs</h2><p class="mut">One per line. Numbered lists, bullets, CSV rows and M3U files work too. Wavelength matches each song on YouTube before saving.</p>
         <textarea class="inp" id="sp-list" placeholder="Helluva Boss - Hot Goss&#10;JT Music - After Hours" spellcheck="false" aria-label="Songs list"></textarea>
         <div class="list-tools"><span class="meta" id="sp-list-count">Songs appear here as you paste</span><select class="inp" id="sp-order" aria-label="List format"><option value="artist">Artist – Song</option><option value="title">Song – Artist</option></select></div>
         <div class="inline"><input class="inp" id="sp-list-name" placeholder="Playlist name" style="max-width:260px" aria-label="Playlist name"><button class="btn solid" data-act="imp-list">Preview list</button></div></div>
@@ -1894,7 +1959,8 @@ function vImport() {
     <div class="box rise"><h2>Paste a Spotify link</h2><p class="mut">In Spotify choose Share → Copy link, then paste it here. Wavelength reads the song list and finds every song on YouTube.</p>
       <div class="inline"><input class="inp" id="sp-url" placeholder="https://open.spotify.com/playlist/…" spellcheck="false" aria-label="Spotify link"><button class="btn solid" data-act="imp-url">Import</button><button class="btn" data-act="paste-link" title="Read a Spotify link from the clipboard">Paste link</button></div>
       <p class="meta" style="margin-top:12px">Works with playlists, albums and songs. The playlist must be public. Without signing in, Spotify shares the first 100 songs of a playlist.</p></div>
-    <div class="box rise" style="--i:1"><h2>Or paste a list of songs</h2><p class="mut">One per line. Numbered lists, bullets, CSV rows and M3U files work too. Preview before anything is saved.</p>
+    ${amazonBoxHTML(1)}
+    <div class="box rise" style="--i:2"><h2>Or paste a list of songs</h2><p class="mut">One per line. Numbered lists, bullets, CSV rows and M3U files work too. Preview before anything is saved.</p>
       <textarea class="inp" id="sp-list" placeholder="Helluva Boss - Hot Goss&#10;JT Music - After Hours" spellcheck="false" aria-label="Songs list"></textarea>
       <div class="list-tools"><span class="meta" id="sp-list-count">Songs appear here as you paste</span><select class="inp" id="sp-order" aria-label="List format"><option value="artist">Artist – Song</option><option value="title">Song – Artist</option></select></div>
       <div class="inline"><input class="inp" id="sp-list-name" placeholder="Playlist name" style="max-width:260px" aria-label="Playlist name"><button class="btn" data-act="imp-list">Preview list</button></div></div>
@@ -2283,6 +2349,7 @@ function vSet() {
       <div class="line"><div><div class="l">Visualizer style</div><div class="s" id="viz-style-name">${esc(WLViz.name(vizStyleId()))} · ${plural(vizVisible().length, 'style')}</div></div><button class="btn" data-act="viz-gallery">Preview styles</button></div>
       <details class="style-guide viz-vis"><summary>Choose which styles appear</summary><p class="mut">Hidden styles disappear from the gallery. At least one stays on.</p><div class="chips">${WLViz.styles.map(x => `<button class="chip${vizHiddenList().includes(x.id) ? '' : ' on'}" data-act="viz-vis" data-id="${x.id}" aria-pressed="${!vizHiddenList().includes(x.id)}">${esc(x.name)}</button>`).join('')}</div></details>
       <div class="line"><div><div class="l">Visualizer size</div><div class="s">Full screen turns the visualizer into the backdrop of the player.</div></div><select class="inp" data-set="vizSize" aria-label="Visualizer size">${[['sm', 'Small'], ['md', 'Medium'], ['lg', 'Large'], ['full', 'Full screen']].map(([v, n]) => `<option value="${v}"${(s.vizSize || 'md') === v ? ' selected' : ''}>${n}</option>`).join('')}</select></div>
+      ${NATIVE ? tg('backupStreams', 'Backup playback servers', 'If the phone cannot get a song from YouTube itself, ask a public Piped server for it. This sends the song’s YouTube id to that server, so it is off by default, and it depends on those servers being up.') : ''}
       ${NATIVE ? tg('realViz', 'Real audio visualizer', 'Reacts to what the phone is actually playing. Android only exposes the output mix, so this asks for the Record Audio permission. Nothing is recorded or stored, and other apps’ sound is included while it plays. If the phone refuses, the generated visualizer is used.') : ''}
       ${NATIVE ? `${tg('lockVisualizer', 'Lock-screen now playing', 'When you lock the phone during playback, Wavelength briefly shows the artwork, the song and a visualizer over the lock screen.')}
       <div class="line"><div><div class="l">Lock-screen preview</div><div class="s">Open the brief now-playing screen without locking the phone.</div></div><button class="btn" data-act="preview-lock">Preview</button></div>
@@ -3097,6 +3164,33 @@ function longWait() {
 }
 const clearWait = () => { clearTimeout(waitT); waitT = 0; };
 addEventListener('online', () => { if (R.cur && R.playing && audio.paused === false && audio.readyState < 3) doPlayTrack(R.cur, playTok, 1, audio.currentTime || 0); });
+/* Android: the phone gets streams with NewPipeExtractor, which stops working whenever YouTube changes something until the
+   app is rebuilt with a newer one. As an opt-in safety net, ask a public Piped server for the audio instead. The servers
+   come and go, so a few are tried quickly and the working one is remembered for the session. */
+let pipedBase = '';
+async function backupStream(id) {
+  const fetchJson = async (url, ms) => {
+    const r = await fetch(url, { signal: AbortSignal.timeout ? AbortSignal.timeout(ms) : undefined });
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    return r.json();
+  };
+  let bases = pipedBase ? [pipedBase] : [];
+  if (!bases.length) {
+    try { const list = await fetchJson('https://piped-instances.kavin.rocks/', 5000); bases = list.map(x => x && x.api_url).filter(Boolean).slice(0, 6); } catch {}
+    if (!bases.length) bases = ['https://pipedapi.kavin.rocks'];
+  }
+  for (const base of bases) {
+    try {
+      const d = await fetchJson(base.replace(/\/$/, '') + '/streams/' + encodeURIComponent(id), 7000);
+      const audio = (d.audioStreams || []).filter(a => a && a.url && !/video/i.test(a.mimeType || ''));
+      // The phone's WebView plays m4a/AAC for certain; take the best of those, then anything else.
+      const pick = (audio.filter(a => /mp4|m4a|aac/i.test(a.mimeType || '')).sort((a, b) => (b.bitrate || 0) - (a.bitrate || 0))[0]) || audio.sort((a, b) => (b.bitrate || 0) - (a.bitrate || 0))[0];
+      if (pick) { pipedBase = base; return pick.url; }
+    } catch {}
+  }
+  pipedBase = '';
+  throw new Error('No backup server could provide this song');
+}
 async function trackSrc(t, attempt = 0, preload = false) {
   if (!t) return '';
   if (t.localId) return '/api/local/' + encodeURIComponent(t.localId) + '/stream' + (attempt ? '?r=' + attempt : '');
@@ -3110,7 +3204,13 @@ async function trackSrc(t, attempt = 0, preload = false) {
         await sleep(700);
         return trackSrc(t, attempt + 1, preload);
       }
-      throw e;
+      if (S.settings.backupStreams && !preload) {
+        try { const u = await backupStream(t.ytId); breadcrumb('backup stream used for ' + t.ytId); return u; } catch {}
+      }
+      breadcrumb('error stream failed ' + t.ytId + ': ' + (e && e.message));
+      throw new Error(S.settings.backupStreams
+        ? 'Could not get this song from YouTube or a backup server'
+        : 'The phone could not get this song from YouTube. YouTube changes often; update Wavelength, or try Backup playback servers in Settings.');
     }
   }
   const u = new URL('/api/stream/' + encodeURIComponent(t.ytId), location.origin);
@@ -3584,6 +3684,7 @@ function setPlaying(p) {
   if (NATIVE) {
     try { window.AndroidBridge.setPlaybackState(!!p, audio.currentTime || 0, isFinite(audio.duration) ? audio.duration : (R.cur && R.cur.duration) || 0); } catch {}
   } else if ('mediaSession' in navigator) navigator.mediaSession.playbackState = p ? 'playing' : 'paused';
+  mediaPush(true);
   updateTransport();
   if (VID.id) vidClock();
 }
@@ -3878,6 +3979,56 @@ function toggleMute() {
   }
   applyVol(); save(); haptic(10);
 }
+/* ═════════ desktop shell: window frame + system media controls ═════════
+   The audio engine runs in the core, so the webview has no playing media and the browser Media Session never reaches the
+   system. The page tells the core what is playing (media keys, the Windows media card and Linux MPRIS read it) and polls
+   for button presses, which run the same play/pause/next/previous as the on-screen controls. */
+const DESKTOP = !NATIVE;
+let frameDark = null;
+function syncFrame() {
+  if (!DESKTOP) return;
+  const dark = document.documentElement.dataset.mode !== 'light';
+  if (dark === frameDark) return;
+  frameDark = dark;
+  api('/api/desktop/theme', { method: 'POST', json: { dark } }).catch(() => {});
+}
+let mediaSent = '', mediaAt = 0, mediaBase = 0, mediaOff = false;
+function mediaCover(t) {
+  const a = t && t.art ? String(t.art) : '';
+  if (/^https?:/i.test(a)) return a;
+  if (a.startsWith('/')) return location.origin + a;
+  return t && t.ytId ? `https://i.ytimg.com/vi/${encodeURIComponent(t.ytId)}/hqdefault.jpg` : '';
+}
+function mediaPush(force) {
+  if (!DESKTOP || mediaOff) return;
+  const t = R.cur, c = audio.currentTime || 0, d = isFinite(audio.duration) ? audio.duration : 0;
+  const body = t ? { has: true, title: t.title || 'Wavelength', artist: t.artist || '', album: t.album || '', cover: mediaCover(t), duration: d || +t.duration || 0, position: c, playing: !!R.playing } : { has: false };
+  const sig = t ? [uid(t), body.playing, body.title, body.artist, Math.round(body.duration)].join('|') : 'none';
+  if (!force && sig === mediaSent) return;
+  mediaSent = sig; mediaAt = Date.now(); mediaBase = c;
+  api('/api/media/state', { method: 'POST', json: body }).catch(() => { mediaOff = true; });
+}
+/* A seek made inside the app changes the position the system card is counting from. */
+function mediaDrift(c) {
+  if (!DESKTOP || mediaOff || !R.playing) return;
+  const expect = mediaBase + (Date.now() - mediaAt) / 1000;
+  if (Math.abs(c - expect) > 2.5) mediaPush(true);
+}
+function mediaEvent(e) {
+  if (!R.cur) return;
+  if (e === 'play') audio.play();
+  else if (e === 'pause' || e === 'stop') audio.pause();
+  else if (e === 'toggle') { if (audio.paused) audio.play(); else audio.pause(); }
+  else if (e === 'next') { if (canNext()) next(); }
+  else if (e === 'prev') prev();
+  else if (e.startsWith('seek:')) audio.currentTime = Math.max(0, audio.currentTime + (parseFloat(e.slice(5)) || 0));
+  else if (e.startsWith('pos:')) audio.currentTime = Math.max(0, parseFloat(e.slice(4)) || 0);
+}
+setInterval(async () => {
+  if (!DESKTOP || mediaOff) return;
+  try { const r = await api('/api/media/poll'); for (const e of (r && r.events) || []) mediaEvent(String(e)); }
+  catch { mediaOff = true; }   // a core without system media support: stop asking
+}, 350);
 function mediaSession() {
   if (!R.cur) return;
   if (NATIVE) {
@@ -3892,6 +4043,7 @@ function mediaSession() {
     } catch {}
     return;
   }
+  mediaPush(true);
   if (!('mediaSession' in navigator)) return;
   const ms = navigator.mediaSession;
   ms.metadata = new MediaMetadata({ title: R.cur.title, artist: R.cur.artist, album: R.cur.album || 'Wavelength', artwork: R.cur.art ? [{ src: R.cur.art, sizes: '512x512' }, { src: R.cur.art, sizes: '256x256' }] : [{ src: 'icons/icon-512.png', sizes: '512x512', type: 'image/png' }] });
@@ -3906,6 +4058,7 @@ function mediaSession() {
 }
 let lastPos = -1;
 function mediaPos(c, d) {
+  mediaDrift(c);
   if (NATIVE) {
     if (!R.cur || Math.floor(c) === lastPos) return;
     lastPos = Math.floor(c);
@@ -4513,6 +4666,9 @@ function impCommit() {
 }
 
 function parseTrackList(text, order = 'artist') {
+  // A file with a header row (Track name, Artist name(s), …) is read column by column.
+  const table = window.WLSongList && WLSongList.parseSongTable(text);
+  if (table && table.length) return table.map(t => ({ spId: 'list-' + rid(), title: t.title, artist: t.artist, album: t.album || '', duration: t.duration || 0, art: null }));
   const clean = x => String(x || '').trim().replace(/^["']|["']$/g, '').trim();
   const csv = l => {
     const out = []; let cur = '', q = false;
@@ -4964,6 +5120,8 @@ const acts = {
   },
   'se-save': seSave,
   'se-reset': () => { if (SE) songRestore(SE.key); },
+  'se-reset-field': el => seResetField(el.dataset.f),
+  'se-lyrics-clear': () => { const ta = $('#se-lyrics'); if (ta) { ta.value = ''; seLyricsNote(); } },
   plmore: playlistMore,
   resume: () => { if (R.cur && audio.paused) togglePlay(); },
   'sleep-menu': el => { const b = el.getBoundingClientRect(); sleepMenu(b.left, b.top - 14 - 6 * 44); },
@@ -5560,6 +5718,13 @@ new MutationObserver(() => { hideOffSettings(); if ($('#upd-box') && !R.upd) upd
   if (S.settings.theme === 'nothing') S.settings.theme = 'dark';
   if (!THEME_GROUPS.some(g => g.items.some(([k]) => k === S.settings.theme))) S.settings.theme = 'dark';
   if (!STYLES.includes(S.settings.style)) S.settings.style = 'nothing';
+  // Windows gets the Windows 11 look the first time only, so the app does not open in a different platform's styling.
+  // It is an ordinary style choice afterwards: pick any other in Settings → Appearance and it stays.
+  if (!NATIVE && /Win/i.test(navigator.platform || '') && !S.settings.winStyleDone) {
+    S.settings.winStyleDone = true;
+    if (S.settings.style === 'nothing') S.settings.style = 'win11';
+    save();
+  }
   if (!['best', 'saver'].includes(S.settings.streamQuality)) S.settings.streamQuality = 'best';
   if (!NATIVE && !/Electron/.test(navigator.userAgent) && 'serviceWorker' in navigator && (location.protocol === 'https:' || ['127.0.0.1', 'localhost'].includes(location.hostname))) navigator.serviceWorker.register('/sw.js').catch(() => {});
   const restored = restoreStateBackup();

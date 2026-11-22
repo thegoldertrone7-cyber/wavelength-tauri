@@ -112,9 +112,25 @@
 <div class="toast" id="toast" role="status" aria-live="polite"></div>
 <wl-audio id="audio" preload="auto" style="display:none"></wl-audio>
 <wl-audio id="audio-b" preload="auto" aria-hidden="true" style="display:none"></wl-audio>
+<script>
+  /* Android has no Tauri audio engine, so native-audio.js deliberately opts
+     out and <wl-audio> stays an unknown element with no play()/pause(). Use
+     real HTML audio elements in the phone's WebView before the app boots. */
+  if (window.AndroidBridge) {
+    document.querySelectorAll('wl-audio').forEach(function (el) {
+      var a = document.createElement('audio');
+      a.id = el.id;
+      a.preload = 'auto';
+      a.style.display = 'none';
+      if (el.hasAttribute('aria-hidden')) a.setAttribute('aria-hidden', 'true');
+      el.parentNode.replaceChild(a, el);
+    });
+  }
+</script>
 <script src="js/themes.js"></script>
 <script src="js/viz.js"></script>
 <script src="js/artists.js"></script>
+<script src="js/songlist.js"></script>
 <script src="js/motion.js"></script>
 <script src="js/skipper.js"></script>
 <script src="js/lyrics.js"></script>

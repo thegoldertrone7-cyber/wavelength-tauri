@@ -1,6 +1,7 @@
 pub mod api;
 pub mod audio;
 pub mod bridge;
+pub mod desktop;
 pub mod diag;
 pub mod generator;
 pub mod lyrics;
@@ -78,6 +79,17 @@ pub fn run() {
             std::env::set_var("WEBKIT_DISABLE_COMPOSITING_MODE", "1");
         }
     }
+    // WebView2 slows timers in a minimised or covered window, which delays end-of-song detection and the media
+    // buttons. Wavelength plays through its own engine, so the page's timers have to keep their pace.
+    #[cfg(windows)]
+    {
+        if std::env::var_os("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS").is_none() {
+            std::env::set_var(
+                "WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS",
+                "--disable-background-timer-throttling --disable-renderer-backgrounding --disable-backgrounding-occluded-windows",
+            );
+        }
+    }
     let headless = std::env::args().any(|a| a == "--headless")
         || std::env::var("WL_HEADLESS").is_ok();
 
@@ -138,7 +150,7 @@ pub fn run() {
             }
 
             let url = format!("http://127.0.0.1:{PORT}");
-            tauri::WebviewWindowBuilder::new(
+            let window = tauri::WebviewWindowBuilder::new(
                 app,
                 "main",
                 tauri::WebviewUrl::External(url.parse().expect("valid url")),
@@ -147,7 +159,16 @@ pub fn run() {
             .inner_size(1280.0, 840.0)
             .min_inner_size(900.0, 620.0)
             .resizable(true)
+            // The app is dark by default; without this the window flashes white before the page paints, and the
+            // title bar stays light. The page corrects the frame to match its theme once it loads.
+            .theme(Some(tauri::Theme::Dark))
+            .background_color(tauri::window::Color(11, 11, 12, 255))
             .build()?;
+            #[cfg(windows)]
+            let hwnd = window.hwnd().ok().map(|h| h.0 as *mut std::ffi::c_void);
+            #[cfg(not(windows))]
+            let hwnd: Option<*mut std::ffi::c_void> = None;
+            desktop::init(app.handle().clone(), hwnd);
             Ok(())
         })
         .run(context)
