@@ -75,6 +75,12 @@
   <div class="np-bg"></div>
   <button class="ib x" data-act="np" data-ic="close" title="Close"></button>
   <div class="np-art" id="np-art"></div>
+  <div class="np-video" id="np-video">
+    <video id="np-vid" muted playsinline disablepictureinpicture disableremoteplayback preload="auto"></video>
+    <div class="np-vid-fx" aria-hidden="true"></div>
+    <span class="np-vid-msg" id="np-vid-msg" role="status"></span>
+    <button class="ib np-vid-big" data-act="np-video-big" data-ic="expand" title="Larger video" aria-label="Larger video"></button>
+  </div>
   <div class="np-meta"><h2 id="np-title">Nothing playing</h2><p id="np-artist"></p><button class="ib np-like" data-act="like" data-ic="heart" title="Like current song (L)" aria-label="Like current song"></button></div>
   <div class="np-lyrics" id="np-lyrics" aria-live="polite"></div>
   <canvas id="viz"></canvas>
@@ -93,7 +99,7 @@
     <button class="ib lg" data-act="next" data-ic="next" title="Next"></button>
     <button class="ib" data-act="repeat" data-ic="repeat" title="Repeat"></button>
   </div>
-  <div class="acts"><button class="btn" data-act="viz-style" id="b-viz">Matrix</button><button class="btn" data-act="viz-full" id="b-viz-full">Full screen</button><button class="btn" data-act="queue">Queue</button><button class="btn" data-act="sleep-menu" id="b-sleep">Sleep</button><button class="btn" data-act="speed-menu" id="b-speed" title="Playback speed ( [ and ] )">1×</button><button class="btn" data-act="lyrics" id="b-lyr" title="Lyrics (Y)">Lyrics</button><button class="btn" data-act="edit-song" id="b-edit" title="Edit title, artist and image (E)">Edit</button></div>
+  <div class="acts"><button class="btn" data-act="np-video" id="b-video" title="Play the music video, framed in your theme">Video</button><button class="btn" data-act="viz-style" id="b-viz">Matrix</button><button class="btn" data-act="viz-full" id="b-viz-full">Full screen</button><button class="btn" data-act="queue">Queue</button><button class="btn" data-act="sleep-menu" id="b-sleep">Sleep</button><button class="btn" data-act="speed-menu" id="b-speed" title="Playback speed ( [ and ] )">1×</button><button class="btn" data-act="lyrics" id="b-lyr" title="Lyrics (Y)">Lyrics</button><button class="btn" data-act="edit-song" id="b-edit" title="Edit title, artist and image (E)">Edit</button></div>
 </section>
 
 <aside class="queue card" id="queue">
@@ -108,6 +114,7 @@
 <wl-audio id="audio-b" preload="auto" aria-hidden="true" style="display:none"></wl-audio>
 <script src="js/themes.js"></script>
 <script src="js/viz.js"></script>
+<script src="js/artists.js"></script>
 <script src="js/motion.js"></script>
 <script src="js/skipper.js"></script>
 <script src="js/lyrics.js"></script>

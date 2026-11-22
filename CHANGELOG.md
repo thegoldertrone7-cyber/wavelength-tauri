@@ -1,5 +1,21 @@
 # Changelog
 
+## Unreleased
+
+- **Smarter recap artists.** Songs are split into their individual artists, so "Hazbin Hotel, Blake Roman" counts for
+  Hazbin Hotel and for Blake Roman, and no combined row appears next to Blake Roman. Variants (Cast, Topic, VEVO,
+  accents) fold together, so twenty Hazbin Hotel songs with twenty different singers are one Hazbin Hotel.
+- **Recap sync.** Listening now merges per device on the client as well, devices that have not played still receive
+  the others' listening, paired devices re-sync every few minutes and when the recap opens, and the recap shows which
+  devices it includes with a Sync now button.
+- **Themed video in the full-screen player.** A Video button shows the song's video in a frame that takes the theme's
+  colours, dots and corner shape. Sound stays on the audio engine; the picture follows its clock.
+- **Linux playlists.** Software compositing is now the default on Linux (`WL_GPU=1` restores acceleration), playlist
+  highlighting no longer re-sorts the list once per row, and a crash guard turns on Safe playlist mode (text only) if
+  the app ever closes while opening a playlist.
+- **Updater.** Install and restart now report real errors instead of doing nothing, show download progress, offer
+  "Update and restart", handle Flatpak (which cannot self-update), and the installer link points at the right repo.
+
 ## 2.9.4
 
 - **Fixed a startup/page-open failure on macOS.** A missing `*/` in the router section of the page script commented out

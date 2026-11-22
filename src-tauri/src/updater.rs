@@ -24,7 +24,7 @@ use axum::http::StatusCode;
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde_json::{json, Value};
-use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tauri_plugin_updater::{Update, UpdaterExt};
@@ -38,6 +38,49 @@ fn now_ms() -> i64 {
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_millis() as i64)
         .unwrap_or(0)
+}
+
+/// Where a person can always get the newest installer by hand.
+const RELEASES: &str = "https://github.com/thegoldertrone7-cyber/wavelength-tauri/releases/latest";
+
+/// How this copy of the app was installed decides whether it can replace itself.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Kind {
+    Desktop,
+    AppImage,
+    Package,
+    Flatpak,
+}
+
+impl Kind {
+    fn name(self) -> &'static str {
+        match self {
+            Kind::Desktop => "desktop",
+            Kind::AppImage => "appimage",
+            Kind::Package => "package",
+            Kind::Flatpak => "flatpak",
+        }
+    }
+    /// A Flatpak is read-only and updated by Flatpak, so the app must not try to overwrite itself.
+    fn can_install(self) -> bool {
+        self != Kind::Flatpak
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn install_kind() -> Kind {
+    if std::env::var_os("FLATPAK_ID").is_some() || std::path::Path::new("/.flatpak-info").exists() {
+        Kind::Flatpak
+    } else if std::env::var_os("APPIMAGE").is_some() {
+        Kind::AppImage
+    } else {
+        Kind::Package
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn install_kind() -> Kind {
+    Kind::Desktop
 }
 
 fn fail(code: StatusCode, msg: impl Into<String>) -> ApiError {
@@ -62,8 +105,11 @@ pub struct Updates {
     configured: AtomicBool,
     /// The newest release found by the last check, not yet downloaded.
     found: Mutex<Option<Update>>,
-    /// A downloaded and signature-verified bundle waiting for a restart.
-    staged: Mutex<Option<(String, Vec<u8>)>>,
+    /// A downloaded and signature-verified bundle waiting for a restart, with the release it belongs to.
+    staged: Mutex<Option<(Update, Vec<u8>)>>,
+    /// Download progress in bytes, for the Settings page.
+    done: AtomicU64,
+    total: AtomicU64,
     checked_at: AtomicI64,
     error: Mutex<String>,
     busy: AtomicBool,
@@ -82,6 +128,8 @@ impl Updates {
             configured: AtomicBool::new(false),
             found: Mutex::new(None),
             staged: Mutex::new(None),
+            done: AtomicU64::new(0),
+            total: AtomicU64::new(0),
             checked_at: AtomicI64::new(0),
             error: Mutex::new(String::new()),
             busy: AtomicBool::new(false),
@@ -103,9 +151,11 @@ impl Updates {
         let found = lock(&self.found).clone();
         let staged = lock(&self.staged)
             .as_ref()
-            .map(|(v, _)| v.clone())
+            .map(|(u, _)| u.version.clone())
             .unwrap_or_default();
         let error = lock(&self.error).clone();
+        let kind = install_kind();
+        let busy = self.busy.load(Ordering::SeqCst);
         json!({
             "ok": true,
             "native": true,
@@ -114,10 +164,14 @@ impl Updates {
             "staged": staged,
             "error": error,
             "rolledBack": false,
+            "how": kind.name(),
+            "canInstall": kind.can_install(),
+            "releaseUrl": RELEASES,
+            "progress": { "busy": busy, "done": self.done.load(Ordering::SeqCst), "total": self.total.load(Ordering::SeqCst) },
             "available": found.map(|u| json!({
                 "version": u.version,
                 "notes": u.body.clone().unwrap_or_default(),
-                "needsInstaller": false,
+                "needsInstaller": !kind.can_install(),
             })),
         })
     }
@@ -132,7 +186,7 @@ impl Updates {
             self.set_error("Updates are not set up in this build");
             return;
         }
-        let updater = match handle.updater() {
+        let updater = match handle.updater_builder().timeout(Duration::from_secs(30)).build() {
             Ok(u) => u,
             Err(e) => {
                 self.set_error(&format!("Updater unavailable: {e}"));
@@ -141,6 +195,7 @@ impl Updates {
         };
         match updater.check().await {
             Ok(found) => {
+                // A newer check can only replace what was found; a bundle already staged for the old find stays usable.
                 *lock(&self.found) = found;
                 self.set_error("");
             }
@@ -151,18 +206,43 @@ impl Updates {
 
     /// Downloads the update found by the last check and verifies its signature.
     pub async fn download(&self) -> Result<(), ApiError> {
-        let found = lock(&self.found).clone();
+        if !install_kind().can_install() {
+            return Err(fail(
+                StatusCode::BAD_REQUEST,
+                "This Flatpak install is updated by downloading the new Flatpak from the releases page",
+            ));
+        }
+        let mut found = lock(&self.found).clone();
+        if found.is_none() {
+            self.check().await;
+            found = lock(&self.found).clone();
+        }
         let Some(update) = found else {
-            return Err(fail(StatusCode::BAD_REQUEST, "Check for updates first"));
+            return Err(fail(StatusCode::BAD_REQUEST, "You are already on the newest version"));
         };
+        if lock(&self.staged).as_ref().map_or(false, |(u, _)| u.version == update.version) {
+            return Ok(());
+        }
         if self.busy.swap(true, Ordering::SeqCst) {
             return Err(fail(StatusCode::CONFLICT, "An update is already downloading"));
         }
-        let result = update.download(|_chunk, _total| {}, || {}).await;
+        self.done.store(0, Ordering::SeqCst);
+        self.total.store(0, Ordering::SeqCst);
+        let result = update
+            .download(
+                |chunk, total| {
+                    self.done.fetch_add(chunk as u64, Ordering::SeqCst);
+                    if let Some(t) = total {
+                        self.total.store(t, Ordering::SeqCst);
+                    }
+                },
+                || {},
+            )
+            .await;
         self.busy.store(false, Ordering::SeqCst);
         match result {
             Ok(bytes) => {
-                *lock(&self.staged) = Some((update.version.clone(), bytes));
+                *lock(&self.staged) = Some((update, bytes));
                 self.set_error("");
                 Ok(())
             }
@@ -174,24 +254,45 @@ impl Updates {
         }
     }
 
-    /// Installs the staged bundle and relaunches. On Windows the installer
-    /// ends the process itself, so the relaunch is done by the installer.
-    pub fn restart(&self) -> Value {
-        let found = lock(&self.found).clone();
+    /// Installs the staged bundle and relaunches. The install runs to the end before the page is answered, so a
+    /// failure is reported (and the bundle kept for another try) instead of vanishing. On Windows the installer ends
+    /// this process itself, so no reply is sent and the page treats the dropped connection as "installing".
+    pub async fn restart(&self) -> Value {
         let handle = lock(&self.handle).clone();
         let staged = lock(&self.staged).take();
-        let (Some((_, bytes)), Some(update), Some(handle)) = (staged, found, handle) else {
-            return json!({ "ok": false, "manual": true });
+        let (Some((update, bytes)), Some(handle)) = (staged, handle) else {
+            return json!({ "ok": false, "error": "Download the update first", "releaseUrl": RELEASES });
         };
-        std::thread::spawn(move || {
-            // Let the HTTP reply reach the page before the app goes away.
-            std::thread::sleep(Duration::from_millis(400));
-            match update.install(&bytes) {
-                Ok(()) => handle.restart(),
-                Err(e) => eprintln!("wavelength update: install failed: {e}"),
+        let ran = tokio::task::spawn_blocking(move || {
+            let r = update.install(&bytes).map_err(|e| e.to_string());
+            (r, update, bytes)
+        })
+        .await;
+        match ran {
+            Ok((Ok(()), _, _)) => {
+                std::thread::spawn(move || {
+                    // Let the reply reach the page before the app goes away.
+                    std::thread::sleep(Duration::from_millis(600));
+                    handle.restart();
+                });
+                json!({ "ok": true, "restarting": true })
             }
-        });
-        json!({ "ok": true })
+            Ok((Err(e), update, bytes)) => {
+                *lock(&self.staged) = Some((update, bytes));
+                let msg = if install_kind() == Kind::Package {
+                    format!("This install could not replace itself ({e}). Download the newest installer instead.")
+                } else {
+                    format!("The update could not be installed: {e}")
+                };
+                self.set_error(&msg);
+                json!({ "ok": false, "error": msg, "releaseUrl": RELEASES })
+            }
+            Err(e) => {
+                let msg = format!("The update could not be installed: {e}");
+                self.set_error(&msg);
+                json!({ "ok": false, "error": msg, "releaseUrl": RELEASES })
+            }
+        }
     }
 }
 
@@ -218,5 +319,5 @@ async fn install(State(st): State<Arc<AppState>>) -> Result<Json<Value>, ApiErro
 }
 
 async fn restart(State(st): State<Arc<AppState>>) -> Json<Value> {
-    Json(st.updater.restart())
+    Json(st.updater.restart().await)
 }

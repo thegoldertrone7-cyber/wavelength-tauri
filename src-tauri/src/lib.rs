@@ -70,7 +70,11 @@ pub fn run() {
                 std::env::set_var(k, v);
             }
         }
-        if std::env::var_os("WL_SAFE_RENDER").is_some() && std::env::var_os("WEBKIT_DISABLE_COMPOSITING_MODE").is_none() {
+        // GPU compositing in WebKitGTK is the other common reason the web process dies (the window goes blank or the
+        // app closes the moment a long, image-heavy page such as a playlist is drawn). Software compositing is
+        // stable everywhere and this interface is plain enough that it stays smooth. WL_GPU=1 turns acceleration
+        // back on for anyone whose drivers are fine; WL_SAFE_RENDER is kept for compatibility.
+        if std::env::var_os("WL_GPU").is_none() && std::env::var_os("WEBKIT_DISABLE_COMPOSITING_MODE").is_none() {
             std::env::set_var("WEBKIT_DISABLE_COMPOSITING_MODE", "1");
         }
     }

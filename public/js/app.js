@@ -163,7 +163,7 @@ function rememberSearch(q) {
 }
 
 /* ═════════ state ═════════ */
-const DEF = { playlists: [], liked: [], history: [], overrides: {}, listening: { v: 1, devices: {} }, settings: { theme: 'dark', style: 'nothing', accent: null, viz: true, vizStyle: 'matrix', vizSize: 'md', vizSizePrev: 'md', lockVisualizer: true, autoplay: true, gapless: true, resume: true, motion: 'system', readSize: 'default', contrast: false, sleepUntil: 0, quality: 192, streamQuality: 'best', volume: 0.8, smartVolume: false, noAi: false, blockedArtists: [], skipCredits: false, skipIntro: 'off', skipOutro: 'off', skipBreaks: 'off', skipSure: 'balanced', skipCrowd: true, skipSilence: true, skipMemory: {}, scrollbar: 'pill', navPos: 'left', dockPos: 'bottom', contentWidth: 'full', dotBg: false, dotOpacity: 22, dotScale: 22, customCss: '', netMode: 'auto', autoUpdate: true, updCheckedAt: 0, shuffleSmart: true, stayInList: true, syncOnOpen: false, syncDaily: false, syncControl: false, syncLast: 0, lockLayout: 'art', lockTheme: 'accent', lockControls: true, lockHide: 9, lockHint: true, pinned: [], perf: 'auto', realViz: false, off: [], setupDone: false, vizHidden: [], discord: false, discordId: '', lyrics: true, headphonesPause: true, plSort: 'added', plView: 'list', swipeRows: true, speed: 1 } };
+const DEF = { playlists: [], liked: [], history: [], overrides: {}, listening: { v: 1, devices: {} }, settings: { theme: 'dark', style: 'nothing', accent: null, viz: true, vizStyle: 'matrix', vizSize: 'md', vizSizePrev: 'md', lockVisualizer: true, autoplay: true, gapless: true, resume: true, motion: 'system', readSize: 'default', contrast: false, sleepUntil: 0, quality: 192, streamQuality: 'best', volume: 0.8, smartVolume: false, noAi: false, blockedArtists: [], skipCredits: false, skipIntro: 'off', skipOutro: 'off', skipBreaks: 'off', skipSure: 'balanced', skipCrowd: true, skipSilence: true, skipMemory: {}, scrollbar: 'pill', navPos: 'left', dockPos: 'bottom', contentWidth: 'full', dotBg: false, dotOpacity: 22, dotScale: 22, customCss: '', netMode: 'auto', autoUpdate: true, updCheckedAt: 0, shuffleSmart: true, stayInList: true, syncOnOpen: false, syncDaily: false, syncControl: false, syncLast: 0, lockLayout: 'art', lockTheme: 'accent', lockControls: true, lockHide: 9, lockHint: true, pinned: [], perf: 'auto', realViz: false, off: [], setupDone: false, vizHidden: [], discord: false, discordId: '', lyrics: true, headphonesPause: true, plSort: 'added', plView: 'list', swipeRows: true, speed: 1, npVideo: false, npVideoBig: false, plSafe: false } };
 
 /* ── Pinned playlists: quick access in the sidebar, on Home, with Alt+1..9 and Android launcher shortcuts ── */
 const pinnedPls = () => (Array.isArray(S.settings.pinned) ? S.settings.pinned : []).map(id => S.playlists.find(p => p.id === id)).filter(Boolean);
@@ -215,23 +215,53 @@ const ownListenSig = () => {
   try { return JSON.stringify((S.listening && S.listening.devices && S.listening.devices[deviceId()]) || null); }
   catch { return ''; }
 };
+/* Every device is the only writer of its own entry, so merging is: for each device keep the newest snapshot (the one
+   with more listening time if two are stamped the same). Same rule as merge_listening in the core. */
+const listenWeight = d => {
+  let n = 0;
+  for (const v of Object.values((d && d.days) || {})) n += +v || 0;
+  for (const b of Object.values((d && d.years) || {})) n += (+(b && b.seconds) || 0) * 2;
+  return n;
+};
+function mergeListening(a, b) {
+  const devices = {};
+  for (const src of [a, b]) {
+    for (const [id, d] of Object.entries((src && src.devices) || {})) {
+      if (!d || typeof d !== 'object') continue;
+      const have = devices[id];
+      const at = +d.updatedAt || 0, old = have ? (+have.updatedAt || 0) : -1;
+      if (!have || at > old || (at === old && listenWeight(d) >= listenWeight(have))) devices[id] = d;
+    }
+  }
+  return { v: 1, devices };
+}
+const listenAgo = ms => {
+  const s = Math.max(0, Math.round((Date.now() - ms) / 1000));
+  if (s < 90) return 'just now';
+  if (s < 5400) return Math.round(s / 60) + ' min ago';
+  if (s < 129600) return Math.round(s / 3600) + ' h ago';
+  return Math.round(s / 86400) + ' days ago';
+};
+/* Listening stats are small, so they sync on their own while this device is paired — no need to wait for a full
+   library merge. This device's snapshot goes to the host and everything the host knows (every other device) comes back
+   in the same round trip, so a device that has not played anything still receives the others' listening. */
 async function syncListeningNow(force = false) {
   if (listenSyncBusy || !R.sync || R.sync.role !== 'guest' || !R.sync.hostUrl) return false;
   const own = S.listening && S.listening.devices && S.listening.devices[deviceId()];
-  if (!own) return false;
-  if (!force && ownListenSig() === listenSyncSig) return false;
+  if (!force && (!own || ownListenSig() === listenSyncSig)) return false;
   listenSyncBusy = true;
   try {
-    await api('/api/sync/listening', { method: 'POST', json: { listening: { v: 1, devices: { [deviceId()]: own } }, device: remoteDeviceName() } });
-    const st = await api('/api/state').catch(() => null);
-    if (st && st.listening && st.listening.devices) S.listening = st.listening;
-    listenSyncSig = ownListenSig();
+    const sent = ownListenSig();
+    const res = await api('/api/sync/listening', { method: 'POST', json: { listening: { v: 1, devices: own ? { [deviceId()]: own } : {} }, device: remoteDeviceName() } });
+    const got = res && res.listening && res.listening.devices ? res.listening : ((await api('/api/state').catch(() => null)) || {}).listening;
+    if (got && got.devices) S.listening = mergeListening(S.listening, got);
+    listenSyncSig = sent; R.listenSyncedAt = Date.now(); R.listenSyncErr = '';
     if (curRoute === 'recap') draw();
     return true;
-  } catch { return false; }
+  } catch (e) { R.listenSyncErr = (e && e.message) || 'Could not reach the host'; if (curRoute === 'recap') draw(); return false; }
   finally { listenSyncBusy = false; }
 }
-setInterval(() => syncListeningNow(false), 60000);
+setInterval(() => syncListeningNow(Date.now() - (R.listenSyncedAt || 0) > 3e5), 60000);
 const npSnapshot = () => R.cur ? { title: R.cur.title || '', artist: R.cur.artist || '', art: /^https?:/.test(R.cur.art || '') ? R.cur.art : '', playing: !!R.playing, pos: Math.round(audio.currentTime || 0), dur: Math.round(isFinite(audio.duration) ? audio.duration : (R.cur.duration || 0)) } : null;
 async function remoteTick(cmd) {
   if (remoteBusy || !R.sync || R.sync.role === 'off') return;
@@ -297,22 +327,68 @@ async function updLoad(check) {
 }
 function updHTML() {
   const u = R.upd; if (!u) return '<p class="mut">Reading version…</p>';
-  const a = u.available, link = 'https://github.com/thegoldertrone7-cyber/wavelength/releases/latest';
-  let line = `<div class="line"><div><div class="l">Wavelength ${esc(u.running || '')}</div><div class="s">${u.error ? esc(u.error) : u.staged ? `Version ${esc(u.staged)} is downloaded and ready.` : a ? `Version ${esc(a.version)} is available${a.size ? ' (' + Math.max(1, Math.round(a.size / 1024)) + ' KB)' : ''}.` : u.checkedAt ? 'You are up to date.' : 'Not checked yet.'}${u.rolledBack ? ' A broken update was rolled back automatically.' : ''}</div>${a && a.notes ? `<div class="s">${esc(a.notes)}</div>` : ''}</div><div class="acts">`;
-  if (u.staged) line += '<button class="btn solid" data-act="upd-restart">Restart now</button>';
-  else if (a && a.needsInstaller) line += `<a class="btn" href="${link}" target="_blank" rel="noopener">Get installer</a>`;
-  else if (a) line += '<button class="btn solid" data-act="upd-install">Install update</button>';
-  else line += '<button class="btn" data-act="upd-check">Check now</button>';
+  const a = u.available, link = u.releaseUrl || 'https://github.com/thegoldertrone7-cyber/wavelength-tauri/releases/latest';
+  const pr = u.progress || {}, pct = pr.total ? Math.min(100, Math.round(pr.done / pr.total * 100)) : 0;
+  const busy = R.updBusy || pr.busy;
+  const status = R.updMsg ? esc(R.updMsg)
+    : busy ? (pr.total ? `Downloading… ${pct}%` : 'Downloading…')
+    : u.error ? esc(u.error)
+    : u.staged ? `Version ${esc(u.staged)} is downloaded and ready.`
+    : a ? `Version ${esc(a.version)} is available${a.size ? ' (' + Math.max(1, Math.round(a.size / 1024)) + ' KB)' : ''}.`
+    : u.checkedAt ? 'You are up to date.' : 'Not checked yet.';
+  let line = `<div class="line"><div><div class="l">Wavelength ${esc(u.running || '')}</div><div class="s">${status}${u.rolledBack ? ' A broken update was rolled back automatically.' : ''}</div>${busy && pr.total ? `<div class="lyr-bar"><i style="width:${pct}%"></i></div>` : ''}${a && a.notes && !busy ? `<div class="s">${esc(a.notes)}</div>` : ''}</div><div class="acts">`;
+  const get = `<a class="btn${u.error || (a && a.needsInstaller) ? ' solid' : ''}" href="${esc(link)}" target="_blank" rel="noopener">Get installer</a>`;
+  if (busy) line += '<button class="btn" disabled>Working…</button>';
+  else if (u.staged) line += '<button class="btn solid" data-act="upd-restart">Restart now</button>';
+  else if (a && a.needsInstaller) line += get;
+  else if (a) line += `<button class="btn solid" data-act="upd-now">Update and restart</button>${u.error ? get : ''}`;
+  else line += `<button class="btn" data-act="upd-check">Check now</button>${u.error ? get : ''}`;
   line += '</div></div>';
-  if (a && a.needsInstaller) line += `<p class="meta">This update changes the app itself, so install the new version once. After that, updates arrive inside the app.</p>`;
+  if (a && a.needsInstaller) line += u.how === 'flatpak'
+    ? '<p class="meta">This copy is a Flatpak, which cannot replace itself. Download the new .flatpak from the releases page and install it over this one; your library stays.</p>'
+    : '<p class="meta">This update changes the app itself, so install the new version once. After that, updates arrive inside the app.</p>';
   return line;
+}
+/* Download with a live percentage (the core reports progress on /api/update/status while the download request runs). */
+async function updDownload() {
+  if (R.updBusy) return false;
+  R.updBusy = true; R.updMsg = ''; paintUpd();
+  const poll = setInterval(async () => { try { const st = await api('/api/update/status'); R.upd = { ...R.upd, progress: st.progress }; paintUpd(); } catch {} }, 450);
+  try {
+    R.upd = await api('/api/update/install', { method: 'POST', json: {} });
+    toast('Update downloaded');
+    return !!(R.upd && R.upd.staged);
+  } catch (e) {
+    R.upd = { ...(R.upd || {}), error: e.message || 'Update failed' };
+    toast(e.message || 'Update failed');
+    return false;
+  } finally { clearInterval(poll); R.updBusy = false; paintUpd(); }
+}
+/* Install and relaunch. The core answers only after the install really finished, so an error is shown here instead of
+   a button that silently does nothing. If the connection drops, the app is closing to restart (the Windows installer
+   does this), which is the expected outcome. */
+async function updRestart() {
+  if (R.updBusy) return;
+  R.updBusy = true; R.updMsg = 'Installing the update…'; paintUpd();
+  try {
+    const r = await api('/api/update/restart', { method: 'POST', json: {} });
+    if (r && r.ok) { R.updMsg = 'Restarting Wavelength…'; paintUpd(); toast('Restarting to finish the update'); return; }
+    R.updMsg = ''; R.upd = { ...(R.upd || {}), error: (r && r.error) || 'The update could not be installed', releaseUrl: (r && r.releaseUrl) || (R.upd && R.upd.releaseUrl) };
+    toast(R.upd.error);
+  } catch {
+    R.updMsg = 'Wavelength is closing to install the update. It reopens by itself; if it does not, open it again.';
+    paintUpd(); toast('Installing the update…');
+    setTimeout(() => { R.updBusy = false; R.updMsg = ''; updLoad(false); }, 20000);
+    return;
+  }
+  R.updBusy = false; await updLoad(false).catch(() => {}); paintUpd();
 }
 function paintUpd() { const b = $('#upd-box'); if (b) b.innerHTML = updHTML(); }
 async function autoUpdateCheck() {
   if (S.settings.autoUpdate === false || Date.now() - (+S.settings.updCheckedAt || 0) < 432e5) return;
   const u = await updLoad(true);
   if (u && u.available && !u.available.needsInstaller) {
-    try { R.upd = await api('/api/update/install', { method: 'POST', json: {} }); paintUpd(); toast(`Version ${R.upd.staged || ''} is ready. Restart to use it.`); } catch {}
+    try { R.upd = await api('/api/update/install', { method: 'POST', json: {} }); paintUpd(); if (R.upd.staged) toast(`Version ${R.upd.staged} is ready. Restart to use it.`); } catch {}
   }
 }
 
@@ -682,9 +758,27 @@ function recapData(from, to) {
   }
   out.plays = Object.values(out.tracks).reduce((n, t) => n + (+t.plays || 0), 0);
   out.topTracks = Object.entries(out.tracks).map(([k, t]) => ({ key: k, ...t })).sort((a, b) => b.seconds - a.seconds).slice(0, 10);
-  out.topArtists = Object.entries(out.artists).map(([name, a]) => ({ name, ...a })).sort((a, b) => b.seconds - a.seconds).slice(0, 6);
+  out.topArtists = recapArtists(out);
   out.topPlaylists = Object.entries(out.playlists).map(([name, p]) => ({ name, ...p })).sort((a, b) => b.seconds - a.seconds).slice(0, 6);
   return out;
+}
+/* One song can credit several artists ("Hazbin Hotel, Blake Roman"), and one franchise can appear under many strings
+   ("Hazbin Hotel Cast", "Hazbin Hotel, Erika Henningsen"). The stored per-artist totals are keyed by the raw string, so the
+   recap ranks people from the songs instead (see artists.js). Listening whose song details are missing is kept by
+   topping each raw string up to its stored total. */
+function recapArtists(out) {
+  const tracks = Object.entries(out.tracks).map(([key, t]) => ({ key, title: t.title, artist: t.artist, seconds: t.seconds, plays: t.plays }));
+  const have = {};
+  for (const t of tracks) { const a = (t.artist || '').trim(); if (a) { const h = have[a] || (have[a] = [0, 0]); h[0] += +t.seconds || 0; h[1] += +t.plays || 0; } }
+  for (const [name, a] of Object.entries(out.artists)) {
+    const h = have[name] || [0, 0], ds = (+a.seconds || 0) - h[0], dp = (+a.plays || 0) - h[1];
+    if (name !== 'Unknown artist' && (ds > 1 || dp > 0)) tracks.push({ key: 'raw:' + name, title: '', artist: name, seconds: Math.max(0, ds), plays: Math.max(0, dp) });
+  }
+  try { return WLArtists.rank(tracks, { limit: 8 }); }
+  catch (e) {
+    console.error('[recap artists]', e);
+    return Object.entries(out.artists).map(([name, a]) => ({ name, key: name, songs: 0, with: [], ...a })).sort((a, b) => b.seconds - a.seconds).slice(0, 8);
+  }
 }
 const recapYears = () => {
   const set = new Set([new Date().getFullYear(), new Date().getFullYear() - 1]);
@@ -1191,9 +1285,10 @@ const liked = t => S.liked.some(x => uid(x) === uid(t) || (x.ytId && x.ytId === 
 const tile = (img, title, sub, attrs, i = 0, fab = '') => `<div class="tile rise" style="--i:${Math.min(i, 18)}" ${attrs}>${img}<div class="tt">${esc(title)}</div><div class="ts">${esc(sub)}</div>${fab}</div>`;
 const loader = () => '<div class="loader"><i></i><i></i><i></i></div>';
 function rows(list, ctx, offset = 0) {
-  return list.map((t, i) => `<div class="row rise${isCur(t) ? ' on' : ''}${t.miss ? ' miss' : ''}" data-ctx="${ctx}" data-i="${i + offset}" data-k="${esc(uid(t))}" style="--i:${Math.min(i, 14)}">
+  const safe = !!S.settings.plSafe;   // safe mode: no pictures and no entrance animation, so a fragile webview only draws text
+  return list.map((t, i) => `<div class="row${safe ? '' : ' rise'}${isCur(t) ? ' on' : ''}${t.miss ? ' miss' : ''}" data-ctx="${ctx}" data-i="${i + offset}" data-k="${esc(uid(t))}"${safe ? '' : ` style="--i:${Math.min(i, 14)}"`}>
     <div class="n"><span>${i + offset + 1}</span><em class="eq"><i></i><i></i><i></i></em><b class="pl">${I.playS}</b></div>
-    <div class="who">${art(t, 'sm')}<div><div class="t">${esc(t.title)}</div><div class="a">${esc(t.artist)}${t.localId ? ' ' + localBadge(t) : ''}${t.miss ? ' · no YouTube match' : ''}</div></div></div>
+    <div class="who">${safe ? '<div class="art sm"><span class="art-d"></span></div>' : art(t, 'sm')}<div><div class="t">${esc(t.title)}</div><div class="a">${esc(t.artist)}${t.localId ? ' ' + localBadge(t) : ''}${t.miss ? ' · no YouTube match' : ''}</div></div></div>
     <div class="al">${esc(t.album || '')}</div><div class="d">${fmt(t.duration)}</div>
     <button class="ib hrt${liked(t) ? ' on' : ''}" data-act="like" title="Like">${liked(t) ? I.heartF : I.heart}</button>
     <button class="ib" data-act="menu" title="More">${I.more}</button></div>`).join('');
@@ -1507,7 +1602,7 @@ function vPlaylist(id) {
   const un = pl.tracks.filter(t => !t.ytId && !t.miss).length, miss = pl.tracks.filter(t => t.miss).length;
   const hidden = pl.tracks.length - tracks.length;
   return `<div class="ph rise">
-    ${isL ? `<div class="cover liked">${I.heartF}</div>` : `<div class="cover${TONE_IDS.has(pl.cover && pl.cover.tone) ? ' tone-' + pl.cover.tone : ''}" data-act="editpl" data-id="${pl.id}" title="Change cover">${coverContent(pl)}${pl.cover && pl.cover.url ? `<img src="${esc(pl.cover.url)}" alt="" onerror="this.remove()">` : ''}<span class="edit">${I.image}</span></div>`}
+    ${isL ? `<div class="cover liked">${I.heartF}</div>` : `<div class="cover${TONE_IDS.has(pl.cover && pl.cover.tone) ? ' tone-' + pl.cover.tone : ''}" data-act="editpl" data-id="${pl.id}" title="Change cover">${coverContent(pl)}${pl.cover && pl.cover.url && !S.settings.plSafe ? `<img src="${esc(pl.cover.url)}" alt="" onerror="this.remove()">` : ''}<span class="edit">${I.image}</span></div>`}
     <div class="ph-r"><div class="eyebrow">Playlist</div><h1 class="ttl">${esc(pl.name)}</h1>
       <div class="meta">${pl.tracks.length} songs · ${min} min${miss ? ` · ${miss} without a match` : ''}${hidden ? ` · ${hidden} hidden by filters` : ''}</div>
       <div class="acts"><button class="btn acc" data-act="playall" data-id="${id}">${I.playS}Play</button>
@@ -1527,7 +1622,7 @@ function vPlaylist(id) {
 }
 /* A playlist can hold hundreds of songs. Drawing every row (each with an image and an entrance animation) at once is
    what stalled and crashed weaker webviews, so rows are drawn in chunks and the next chunk is added as you scroll. */
-const plChunk = () => (typeof LINUX_WEBVIEW !== 'undefined' && LINUX_WEBVIEW) ? 25 : 50;
+const plChunk = () => S.settings.plSafe ? 20 : (typeof LINUX_WEBVIEW !== 'undefined' && LINUX_WEBVIEW) ? 25 : 50;
 function plRowsHTML(tracks, id) {
   if (!tracks.length) return R.plFilter ? `<div class="empty">No songs match “${esc(R.plFilter)}”.</div>`
     : '<div class="empty">Empty for now. Use the ••• menu on any song to add it here.</div>';
@@ -1626,10 +1721,24 @@ function recapBuckets(days, view, from, to, months) {
   }
   return out;
 }
+/* Which devices feed this recap, and whether this one is keeping them in step. */
+function recapDevicesHTML() {
+  const me = deviceId(), list = Object.entries((S.listening && S.listening.devices) || {})
+    .map(([id, d]) => ({ id, name: (d && d.name) || 'Device', at: +(d && d.updatedAt) || 0, sec: Object.values((d && d.days) || {}).reduce((n, v) => n + (+v || 0), 0) }))
+    .filter(d => d.sec > 0 || d.id === me).sort((a, b) => (b.id === me) - (a.id === me) || b.sec - a.sec);
+  const role = R.sync && R.sync.role;
+  const state = role === 'guest' ? (R.listenSyncErr ? `Could not reach the host: ${esc(R.listenSyncErr)}` : R.listenSyncedAt ? `Synced ${listenAgo(R.listenSyncedAt)}. Devices share their listening automatically.` : 'Connecting to the host…')
+    : role === 'host' ? 'This device is the host. Paired devices send their listening here automatically.'
+    : 'Not paired, so this recap only includes this device. Pair your other devices once in Settings → Devices and their listening merges in.';
+  const btn = role === 'guest' ? `<button class="btn sm" data-act="recap-sync">${I.chart}Sync now</button>` : role === 'host' ? '' : '<button class="btn sm" data-go="settings">Pair devices</button>';
+  return `<div class="recap-devs"><div class="recap-devs-top"><div><div class="eyebrow">Devices in this recap</div><p class="meta">${state}</p></div>${btn}</div>
+    <div class="chips">${list.map(d => `<span class="chip dev${d.id === me ? ' on' : ''}" title="${d.at ? 'Last updated ' + esc(listenAgo(d.at)) : ''}">${esc(d.name)}${d.id === me ? ' · this device' : ''} · ${esc(fmtDuration(d.sec))}</span>`).join('')}</div></div>`;
+}
 function vRecap(arg) {
   const range = parseRecapRange(arg);
   const from = range.from, to = range.to;
   R.recapFrom = from; R.recapTo = to;
+  if (R.sync && R.sync.role === 'guest' && !listenSyncBusy && Date.now() - (R.listenTried || 0) > 30000) { R.listenTried = Date.now(); setTimeout(() => syncListeningNow(true), 50); }
   const r = recapData(from, to);
   const years = recapYears();
   const sameYear = from.slice(0, 4) === to.slice(0, 4);
@@ -1649,7 +1758,7 @@ function vRecap(arg) {
   const rank = (list, kind) => list.length ? `<div class="recap-list">${list.map((x, i) => `<div class="recap-row">
       <span class="rk">${String(i + 1).padStart(2, '0')}</span>
       ${kind === 'track' ? art({ art: x.art, title: x.title }, 'sm') : `<span class="recap-dot">${esc((x.name || x.title || '?')[0].toUpperCase())}</span>`}
-      <span class="rm"><b>${esc(x.title || x.name)}</b><small>${kind === 'track' ? esc(x.artist || '') : kind === 'artist' ? `${plural(x.plays, 'play')}` : `${plural(x.plays, 'play')}`}</small></span>
+      <span class="rm"><b>${esc(x.title || x.name)}</b><small>${kind === 'track' ? esc(x.artist || '') : kind === 'artist' ? `${x.songs ? plural(x.songs, 'song') + ' · ' : ''}${plural(x.plays, 'play')}${x.with && x.with.length ? ' · with ' + esc(x.with.slice(0, 2).join(', ')) : ''}` : `${plural(x.plays, 'play')}`}</small></span>
       <span class="rv">${esc(fmtDuration(x.seconds))}</span></div>`).join('')}</div>` : `<div class="empty">Nothing here yet.</div>`;
   return `<div class="recap rise">
     <div class="recap-hero">
@@ -1667,6 +1776,7 @@ function vRecap(arg) {
       </div>
     </div>
     ${r.seconds && r.partial && !r.detailed ? `<div class="banner"><b>This range has older listening without daily detail.</b> Total time is complete, but song, artist and playlist rankings for part of a year start with this version. Pick a whole year to see full rankings.</div>` : ''}
+    ${recapDevicesHTML()}
     ${r.seconds ? `<div class="recap-stats">
       <div class="recap-stat"><small>Total time</small><b>${totalHours >= 10 ? Math.round(totalHours) : totalHours.toFixed(1)}h</b><span>${esc(plural(Math.round(r.seconds / 60), 'minute'))}</span></div>
       <div class="recap-stat"><small>Songs played</small><b>${r.plays}</b><span>${plural(r.topTracks.length, 'song')} ranked</span></div>
@@ -1682,7 +1792,7 @@ function vRecap(arg) {
       <div><div class="sec"><h2>Top playlists</h2><span class="meta">Per playlist</span></div>${rank(r.topPlaylists, 'playlist')}</div>
     </div>
     <div class="recap-cols"><div><div class="sec"><h2>Top artists</h2><span class="meta">Most time</span></div>${rank(r.topArtists, 'artist')}</div>
-      <div class="recap-note"><h2>About this recap</h2><p class="mut">Pick any start and end date, or jump to a year. Complete years use full-year totals; partial ranges use daily listening recorded from this version onward. Total time is complete either way. Wavelength merges devices without counting the same device twice, and YouTube does not provide reliable genre metadata, so this recap ranks artists, playlists and songs instead of inventing a genre.</p></div></div>` : ''}
+      <div class="recap-note"><h2>About this recap</h2><p class="mut">Pick any start and end date, or jump to a year. Complete years use full-year totals; partial ranges use daily listening recorded from this version onward. Total time is complete either way. Wavelength merges devices without counting the same device twice. Artists are grouped for you: every person on a song is counted, and a group such as Hazbin Hotel is one entry however many different singers its songs have. YouTube does not provide reliable genre metadata, so this recap ranks artists, playlists and songs instead of inventing a genre.</p></div></div>` : ''}
   </div>`;
 }
 
@@ -2057,7 +2167,7 @@ async function refreshLibraryState() {
   if (Array.isArray(st.playlists)) S.playlists = st.playlists;
   if (Array.isArray(st.liked)) S.liked = st.liked;
   if (Array.isArray(st.history)) S.history = st.history;
-  if (st.listening && typeof st.listening === 'object' && st.listening.devices) S.listening = st.listening;
+  if (st.listening && typeof st.listening === 'object' && st.listening.devices) S.listening = mergeListening(S.listening, st.listening);
   ovApplyAll();
   drawSide();
   if (['home', 'library', 'playlist', 'liked', 'local', 'settings', 'recap'].includes(curRoute)) draw();
@@ -2121,6 +2231,7 @@ function vSet() {
         <textarea class="inp css-box" id="custom-css" rows="7" spellcheck="false" autocomplete="off" aria-label="Custom CSS" placeholder="/* Paste or write CSS here */">${esc(s.customCss || '')}</textarea>
         <div class="acts"><button class="btn sm" data-act="css-starter">Insert template</button><button class="btn sm" data-act="css-clear">Clear</button></div></div></div>
       <div class="line"><div><div class="l">Performance</div><div class="s">Lite removes blur, glow drift and extra animation to keep scrolling and playback smooth on phones. Automatic uses Lite on Android.</div></div><select class="inp" data-set="perf" aria-label="Performance mode">${[['auto', 'Automatic'], ['lite', 'Lite'], ['full', 'Full effects']].map(([v, n]) => `<option value="${v}"${(s.perf || 'auto') === v ? ' selected' : ''}>${n}</option>`).join('')}</select></div>
+      ${tg('plSafe', 'Safe playlist mode', 'Opens playlists as plain text: no cover pictures, no animation, smaller batches. Turns on by itself if the app ever closes while opening a playlist.')}
       <div class="line"><div><div class="l">Scrollbars</div><div class="s">Slim bars that follow the rounded shape of each panel. They can also stay out of sight until you hover.</div></div><select class="inp" data-set="scrollbar" aria-label="Scrollbar style">${SCROLLBARS.map(([v, l]) => `<option value="${v}"${(s.scrollbar || 'pill') === v ? ' selected' : ''}>${l}</option>`).join('')}</select></div>
       ${tg('viz', 'Show visualizer', NATIVE
         ? 'Follows playback on the phone. Android does not expose the WebView’s audio samples, so the motion is generated from the track and the playback clock.'
@@ -2262,6 +2373,24 @@ function tileFor(r, a) {
   const hit = $$('#view [data-go]').find(e => e.dataset.go === go);
   return hit ? hit.querySelector('.cover, .art') : null;
 }
+/* Crash guard. A playlist that takes the webview down leaves a marker behind (a page that closes normally removes it).
+   If the next start finds the marker, playlists open in safe mode from then on: text only, no pictures. Settings → Performance turns it back off. */
+const PL_GUARD = 'wl-pl-guard';
+function plGuardArm() {
+  try { localStorage.setItem(PL_GUARD, String(Date.now())); } catch {}
+  clearTimeout(R.plGuardT); R.plGuardT = setTimeout(plGuardClear, 5000);
+}
+function plGuardClear() { clearTimeout(R.plGuardT); try { localStorage.removeItem(PL_GUARD); } catch {} }
+addEventListener('pagehide', plGuardClear);
+function plGuardCheck() {
+  let hit = '';
+  try { hit = localStorage.getItem(PL_GUARD) || ''; localStorage.removeItem(PL_GUARD); } catch {}
+  if (!hit || S.settings.plSafe) return false;
+  S.settings.plSafe = true; save();
+  breadcrumb('error previous session ended while opening a playlist; safe mode on');
+  setTimeout(() => toast('Wavelength closed while opening a playlist last time. Playlists now open in safe mode (Settings → Performance).'), 1500);
+  return true;
+}
 async function route() {
   try { return await routeInner(); } catch (e) {
     breadcrumb('error route ' + String((e && e.message) || e));
@@ -2281,6 +2410,7 @@ async function routeInner() {
     if (on) a.setAttribute('aria-current', 'page'); else a.removeAttribute('aria-current');
   });
   breadcrumb('open ' + curRoute + (curRoute === 'playlist' ? ' (' + playlistTracks(curArg).length + ' songs)' : ''));
+  if (curRoute === 'playlist' || curRoute === 'liked') plGuardArm();
   const mark = WLMotion.takeMark(), oldHdr = drawn ? $('#view .ph .cover') : null;
   const prevRoute = lastRoute, prevArg = lastArg; lastRoute = curRoute; lastArg = curArg;
   const swap = () => {
@@ -3401,6 +3531,7 @@ function setPlaying(p) {
     try { window.AndroidBridge.setPlaybackState(!!p, audio.currentTime || 0, isFinite(audio.duration) ? audio.duration : (R.cur && R.cur.duration) || 0); } catch {}
   } else if ('mediaSession' in navigator) navigator.mediaSession.playbackState = p ? 'playing' : 'paused';
   updateTransport();
+  if (VID.id) vidClock();
 }
 
 function onEnded() {
@@ -3896,16 +4027,20 @@ function uiNow() {
   for (const e of fillEls) e.style.width = '0%';
   hl();
   updateTransport();
+  vidSync();
 }
 function hl() {
   const t = R.cur;
   const lk = t && liked(t);
   $('#p-like').innerHTML = lk ? I.heartF : I.heart; $('#p-like').classList.toggle('on', !!lk);
   $$('.np-like').forEach(b => { b.innerHTML = lk ? I.heartF : I.heart; b.classList.toggle('on', !!lk); });
+  // ctxList sorts and filters the whole playlist, so it runs once per list here, not once per row.
+  const lists = {}, rowsOf = c => lists[c] || (lists[c] = ctxList(c));
   $$('.row:not(.flip-ghost)').forEach(r => {
-    const x = ctxList(r.dataset.ctx)[+r.dataset.i]; if (!x) return;
+    const x = rowsOf(r.dataset.ctx)[+r.dataset.i]; if (!x) return;
     r.classList.toggle('on', isCur(x));
-    const h = $('.hrt', r), l = liked(x); h.classList.toggle('on', l); h.innerHTML = l ? I.heartF : I.heart;
+    const h = $('.hrt', r); if (!h) return;
+    const l = liked(x); h.classList.toggle('on', l); h.innerHTML = l ? I.heartF : I.heart;
   });
   $$('.qi').forEach(q => q.classList.toggle('on', +q.dataset.qi === R.idx));
 }
@@ -3931,8 +4066,65 @@ function toggleNP(force) {
   WLMotion.player(() => {
     $('#np').classList.toggle('open', want); vizSync();
     if (npTarget === want) npTarget = null;
+    vidSync();
   }, want);
 }
+/* ═════════ themed video in the full-screen player ═════════
+   The sound always comes from the audio engine. The picture is a muted, picture-only YouTube stream drawn inside a
+   frame that takes its colours, dots and corner shape from the current theme, and it follows the audio clock: a drift
+   over 0.4 s is a hard seek, a smaller drift is closed by nudging the playback rate for a moment. */
+const VID = { id: '', alt: false, timer: 0 };
+const vidWanted = () => !!(S.settings.npVideo && R.cur && R.cur.ytId && !R.cur.localId && npIsOpen());
+const vidMsg = t => { const m = $('#np-vid-msg'); if (m) { m.textContent = t || ''; m.style.display = t ? '' : 'none'; } };
+function vidStop() {
+  clearInterval(VID.timer); VID.timer = 0;
+  const v = $('#np-vid'); VID.id = '';
+  if (!v) return;
+  v.onerror = null; v.onloadeddata = null;
+  try { v.pause(); v.removeAttribute('src'); v.load(); } catch {}
+}
+function vidLoad(id, alt = false) {
+  const v = $('#np-vid'); if (!v) return;
+  VID.id = id; VID.alt = alt; v.muted = true;
+  vidMsg(alt ? 'Trying another video format…' : 'Loading video…');
+  v.onloadeddata = () => { if (VID.id !== id) return; vidMsg(''); vidClock(); };
+  v.onerror = () => {
+    if (VID.id !== id) return;
+    if (!alt) return vidLoad(id, true);
+    vidMsg('No video for this song. The music keeps playing.');
+    breadcrumb('video failed ' + id);
+  };
+  v.src = `/api/video/${encodeURIComponent(id)}${alt ? '?alt=1' : ''}`;
+  v.load();
+  vidClock();
+}
+function vidClock() {
+  clearInterval(VID.timer);
+  const v = $('#np-vid'); if (!v || !VID.id) return;
+  const tick = () => {
+    if (!VID.id || v.readyState < 2) return;
+    const base = +audio.playbackRate || 1, a = audio.currentTime || 0, d = a - v.currentTime;
+    const live = R.playing && !audio.paused && !document.hidden;
+    if (Math.abs(d) > 0.4) { try { v.currentTime = a; } catch {} v.playbackRate = base; }
+    else if (live && Math.abs(d) > 0.08) v.playbackRate = base * (1 + Math.max(-0.05, Math.min(0.05, d * 0.1)));
+    else if (v.playbackRate !== base) v.playbackRate = base;
+    if (live) { if (v.paused) v.play().catch(() => {}); } else if (!v.paused) v.pause();
+  };
+  tick(); VID.timer = setInterval(tick, 400);
+}
+function vidSync() {
+  const np = $('#np'), box = $('#np-video'); if (!np || !box) return;
+  const can = !!(R.cur && R.cur.ytId && !R.cur.localId), want = vidWanted();
+  const b = $('#b-video');
+  if (b) { b.style.display = can || !R.cur ? '' : 'none'; b.classList.toggle('solid', !!S.settings.npVideo); b.textContent = S.settings.npVideo ? 'Hide video' : 'Video'; }
+  np.classList.toggle('video-on', want);
+  np.classList.toggle('video-big', want && !!S.settings.npVideoBig);
+  if (!want) { if (VID.id) vidStop(); return; }
+  if (VID.id !== R.cur.ytId) vidLoad(R.cur.ytId);
+  else vidClock();
+}
+document.addEventListener('visibilitychange', () => { if (VID.id) vidClock(); });
+
 function haptic(ms = 8) { try { if (navigator.vibrate) navigator.vibrate(ms); } catch {} }
 function copyText(text) {
   navigator.clipboard.writeText(text).then(() => toast('Copied')).catch(() => toast('Clipboard is blocked'));
@@ -4519,6 +4711,7 @@ const acts = {
   'folder-merge': async () => { try { const r = await api('/api/sync/folder/merge', { method: 'POST', json: {} }); R.folder = r; await refreshLibraryState(); toast(r.merged ? `Merged ${plural(r.merged, 'device file')}` : 'Already up to date'); } catch (e) { toast(e.message || 'Merge failed'); } paintFolder(); },
   'folder-clear': async () => { try { R.folder = await api('/api/sync/folder', { method: 'POST', json: { dir: '' } }); } catch {} paintFolder(); },
   'recap-view': el => { R.recapView = el.dataset.v; draw(); },
+  'recap-sync': async () => { toast('Syncing listening…'); R.listenTried = Date.now(); const ok = await syncListeningNow(true); toast(ok ? 'Recap is up to date on every paired device' : 'Could not reach the host'); },
   'recap-preset': el => {
     const f = d => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
     const to = new Date(), from = new Date(); const n = el.dataset.n;
@@ -4527,8 +4720,9 @@ const acts = {
     nav('recap/' + f(from) + '~' + f(to));
   },
   'upd-check': () => updLoad(true),
-  'upd-install': async () => { try { toast('Downloading update…'); R.upd = await api('/api/update/install', { method: 'POST', json: {} }); paintUpd(); toast('Update ready. Restart to use it.'); } catch (e) { toast(e.message || 'Update failed'); } },
-  'upd-restart': async () => { try { const r = await api('/api/update/restart', { method: 'POST', json: {} }); if (NATIVE) setTimeout(() => location.reload(), 400); else if (r && r.manual) toast('Close and reopen Wavelength to finish updating.'); } catch { toast('Close and reopen Wavelength to finish updating.'); } },
+  'upd-install': async () => { await updDownload(); },
+  'upd-now': async () => { if (await updDownload()) await updRestart(); },
+  'upd-restart': async () => { await updRestart(); },
   pinpl: el => togglePin(el.dataset.id),
   'feat-pick': el => {
     const k = el.dataset.k; featDraft.has(k) ? featDraft.delete(k) : featDraft.add(k);
@@ -4567,6 +4761,8 @@ const acts = {
     $$('.viz-card').forEach(b => { const on = b.dataset.id === id; b.classList.toggle('on', on); b.setAttribute('aria-pressed', on ? 'true' : 'false'); });
     const label = $('#viz-style-name'); if (label) label.textContent = `${WLViz.name(id)} · ${plural(WLViz.styles.length, 'style')}`;
   },
+  'np-video': () => { S.settings.npVideo = !S.settings.npVideo; save(); vidSync(); if (S.settings.npVideo && R.cur && R.cur.localId) toast('Video needs a YouTube song'); },
+  'np-video-big': () => { S.settings.npVideoBig = !S.settings.npVideoBig; save(); vidSync(); },
   'viz-full': () => {
     if (S.settings.vizSize === 'full') S.settings.vizSize = S.settings.vizSizePrev || 'md';
     else { S.settings.vizSizePrev = VIZ_SIZES.includes(S.settings.vizSize) ? S.settings.vizSize : 'md'; S.settings.vizSize = 'full'; S.settings.viz = true; }
@@ -5316,7 +5512,7 @@ new MutationObserver(() => { hideOffSettings(); if ($('#upd-box') && !R.upd) upd
   applyTheme(); applyMotion(); applyReading(); applyVol(); drawSide(); renderQueue(); updateTransport(); syncSleep(); vizSync(); updateSearchClear(); syncNativePrefs(); watchAudioOutputs();
   applyScrollbar(); applyLayout(); applyDots(); applyCustomCss(); ovApplyAll(); applySpeed(); WLMotion.parallax($('#main'), () => $('#view .ph'));
   applyPerf(); applyFeatures(); syncShortcuts();
-  await refreshHealth(); await route(); restoreSession();
+  await refreshHealth(); plGuardCheck(); await route(); restoreSession();
   setTimeout(() => { try { window.AndroidBridge.confirmWebUpdate(); } catch {} }, 3000);
   setTimeout(autoUpdateCheck, 12000);
   if (!S.settings.setupDone) { S.settings.setupDone = true; save(); setTimeout(featureSetup, 350); } localLoad(); syncLoad().then(() => { syncAutoCheck(true); syncListeningNow(); }); syncPoll(); folderLoad();

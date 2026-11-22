@@ -2021,3 +2021,27 @@ html[data-viz-size=full] .np.lyr #viz{display:block}
 [data-linux="1"] .rise{animation:none!important;opacity:1!important;transform:none!important}
 [data-linux="1"] .list>*{content-visibility:visible!important}
 [data-linux="1"] .ph .cover,[data-linux="1"] .view,[data-linux="1"] .main{will-change:auto!important}
+
+/* 2.10: recap device panel */
+.recap-devs{margin:18px 0 6px;padding:16px 18px;border:1px solid var(--line);border-radius:24px;background:var(--card2)}
+.recap-devs-top{display:flex;gap:14px;align-items:flex-start;justify-content:space-between;flex-wrap:wrap;margin-bottom:10px}
+.recap-devs-top .meta{margin:4px 0 0;max-width:62ch}
+.recap-devs .chip.dev{cursor:default}
+
+/* 2.10: themed video in the full-screen player. Colours, dots and corner shape come from the active theme and style. */
+.np-video{display:none;position:relative;width:min(560px,86vw);aspect-ratio:16/9;max-height:38vh;--vid-r:28px;border-radius:var(--vid-r);overflow:hidden;background:var(--bg,#000);
+  border:1px solid rgba(var(--accent-rgb),.55);
+  box-shadow:0 0 0 1px var(--line),0 30px 70px -24px rgba(0,0,0,.8),0 0 56px -14px rgba(var(--accent-rgb),.6);transition:width .5s var(--soft),max-height .5s var(--soft)}
+.np.video-on .np-video{display:block}
+.np.video-on .np-art{display:none}
+.np-video video{width:100%;height:100%;object-fit:cover;display:block;background:var(--bg,#000)}
+.np-vid-fx{position:absolute;inset:0;pointer-events:none;
+  background:radial-gradient(circle,var(--dot,rgba(255,255,255,.2)) 1px,transparent 1.5px) 0 0/7px 7px,
+    linear-gradient(180deg,rgba(var(--accent-rgb),.16),transparent 28%,transparent 68%,color-mix(in srgb,var(--bg,#000) 72%,transparent));opacity:.55}
+.np-vid-msg{position:absolute;left:12px;right:56px;bottom:10px;font:500 11px var(--font-m);color:var(--text2);text-shadow:0 1px 6px rgba(0,0,0,.7);pointer-events:none}
+.np-vid-big{position:absolute;right:8px;bottom:8px;background:color-mix(in srgb,var(--card) 70%,transparent);border:1px solid var(--line)}
+.np.video-big .np-video{width:min(94vw,calc(60vh*16/9));max-height:60vh}
+html:not([data-viz-size=full]) .np.video-on #viz{display:none!important}
+[data-style=win11] .np-video{--vid-r:8px}[data-style=kde] .np-video{--vid-r:4px}[data-style=macos] .np-video{--vid-r:14px}
+[data-style=gnome] .np-video{--vid-r:18px}[data-style=classic] .np-video{--vid-r:12px}[data-style=glass] .np-video{--vid-r:26px}[data-style=oneui] .np-video{--vid-r:36px}
+@media (max-width:860px){.np-video{width:min(92vw,520px);max-height:30vh}}

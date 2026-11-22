@@ -95,6 +95,7 @@ pub fn router(state: Arc<AppState>, public_dir: PathBuf) -> Router {
         .route("/api/info/{id}", get(info))
         .route("/api/related/{id}", get(related))
         .route("/api/stream/{id}", get(stream))
+        .route("/api/video/{id}", get(video))
         .route("/api/warm/{id}", get(warm))
         .route("/api/cached/{id}", get(cached))
         .route("/api/local", get(local_list))
@@ -617,6 +618,64 @@ fn resolve_stream_sync(id: &str) -> Result<String, String> {
         .find(|l| l.starts_with("http"))
         .map(|s| s.trim().to_string())
         .ok_or_else(|| "No audio stream available".to_string())
+}
+
+/// Picture-only stream for the full-screen video mode. The sound still comes from the audio engine, so no audio track
+/// is wanted here. `?alt=1` asks for WebM instead of H.264 for webviews (WebKitGTK without libav) that cannot decode it.
+async fn video(
+    State(st): State<Arc<AppState>>,
+    AxPath(id): AxPath<String>,
+    Query(q): Query<HashMap<String, String>>,
+) -> ApiResult<Response> {
+    if id.len() > 32 || !id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') {
+        return Err(bad("Not a video id"));
+    }
+    let alt = q.get("alt").map_or(false, |v| v == "1");
+    let key = format!("v{}:{id}", if alt { "w" } else { "m" });
+    if let Ok(cache) = st.stream_cache.lock() {
+        if let Some((at, url)) = cache.get(&key) {
+            if at.elapsed() < Duration::from_secs(3 * 3600) {
+                return Ok(Redirect::temporary(url).into_response());
+            }
+        }
+    }
+    let lookup = id.clone();
+    let _slot = st.ytdlp.acquire().await.map_err(|e| bad(e.to_string()))?;
+    let url = tokio::task::spawn_blocking(move || resolve_video_sync(&lookup, alt))
+        .await
+        .map_err(|e| bad(e.to_string()))?
+        .map_err(bad)?;
+    if let Ok(mut cache) = st.stream_cache.lock() {
+        cache.insert(key, (Instant::now(), url.clone()));
+    }
+    Ok(Redirect::temporary(&url).into_response())
+}
+
+fn video_format(alt: bool) -> &'static str {
+    // 720p is plenty for a framed player and keeps the download small; muxed formats are the last resort.
+    if alt {
+        "bv*[height<=720][ext=webm]/bv*[height<=720][vcodec^=vp9]/bv*[height<=720]/b[height<=720]"
+    } else {
+        "bv*[height<=720][ext=mp4][vcodec^=avc1]/bv*[height<=720][ext=mp4]/bv*[height<=720]/b[height<=720]"
+    }
+}
+
+fn resolve_video_sync(id: &str, alt: bool) -> Result<String, String> {
+    let out = run_ytdlp(
+        &[
+            "-g".into(),
+            "--no-warnings".into(),
+            "--no-playlist".into(),
+            "-f".into(),
+            video_format(alt).into(),
+            format!("https://www.youtube.com/watch?v={id}"),
+        ],
+        Duration::from_secs(30),
+    )?;
+    out.lines()
+        .find(|l| l.starts_with("http"))
+        .map(|s| s.trim().to_string())
+        .ok_or_else(|| "No video stream available".to_string())
 }
 
 /// POST /api/log: the page's breadcrumbs and errors, appended to wavelength.log.
