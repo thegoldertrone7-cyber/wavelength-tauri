@@ -1429,6 +1429,50 @@ function seSave() {
   }, () => { if (oldArt && oldArt !== newArt && oldArt.startsWith('/covers/')) delCover(oldArt); });
 }
 const SE_yt = (prev, e) => (prev && prev.yt) || e.yt || '';
+/* ═════════ reset edited song details ═════════
+   Every edit stores the original next to it (S.overrides[key].o), so a kind of edit can be taken back on its own —
+   titles, artists or cover art — or all of them at once. The page shows what would change, and every reset can be undone. */
+const OV_KINDS = { title: 'titles', artist: 'artists', art: 'cover art' };
+function ovCounts() {
+  const c = { title: 0, artist: 0, art: 0, songs: 0 };
+  for (const e of Object.values(S.overrides || {})) {
+    let any = false;
+    for (const k of Object.keys(OV_KINDS)) if (e && e[k] != null) { c[k]++; any = true; }
+    if (any) c.songs++;
+  }
+  return c;
+}
+function ovReset(kinds) {
+  const snap = JSON.parse(JSON.stringify(S.overrides || {})), gone = [];
+  let n = 0;
+  for (const [key, e] of Object.entries(S.overrides || {})) {
+    const back = {};
+    for (const k of kinds) {
+      if (e[k] == null) continue;
+      if (k === 'art' && String(e.art).startsWith('/covers/')) gone.push(e.art);
+      back[k] = (e.o && e.o[k]) ?? '';
+      delete e[k];
+    }
+    if (!Object.keys(back).length) continue;
+    n++;
+    ovWrite(key, e.yt, back);
+    if (e.title == null && e.artist == null && e.art == null) delete S.overrides[key];
+  }
+  if (!n) return toast(`No edited ${kinds.length === 3 ? 'details' : OV_KINDS[kinds[0]]} to reset`);
+  afterSongEdit();
+  const what = kinds.length === 3 ? 'edited details' : OV_KINDS[kinds[0]];
+  undoable(`Reset ${what} on ${plural(n, 'song')}`, () => {
+    S.overrides = snap; ovApplyAll(); afterSongEdit();
+  }, () => { for (const u of gone) { const still = Object.values(S.overrides).some(e => e.art === u); if (!still) delCover(u); } });
+}
+function editsBoxHTML() {
+  const c = ovCounts(), none = !c.songs;
+  const row = (k, label, sub) => `<div class="line"><div><div class="l">${label}</div><div class="s">${c[k] ? plural(c[k], 'song') + ' with a changed ' + sub : 'Nothing changed'}</div></div><button class="btn" data-act="ov-reset" data-k="${k}"${c[k] ? '' : ' disabled'}>Reset</button></div>`;
+  return `<div class="box rise" style="--i:3" id="set-edits"><h2>Edited song details</h2>
+    <p class="mut">Titles, artists and cover art you changed with Edit. Each reset puts the original back everywhere that song appears, and you can undo it right after.</p>
+    ${row('title', 'Titles', 'title')}${row('artist', 'Artists', 'artist')}${row('art', 'Cover art', 'cover')}
+    <div class="line"><div><div class="l">Everything</div><div class="s">${none ? 'No edited songs' : 'Restores all ' + plural(c.songs, 'edited song') + ' to their original title, artist and cover'}</div></div><button class="btn dng" data-act="ov-reset" data-k="all"${none ? ' disabled' : ''}>Reset all edits</button></div></div>`;
+}
 function songRestore(key) {
   const e = S.overrides[key]; if (!e) return;
   const was = { ...e }, back = { ...e.o };
@@ -2205,7 +2249,7 @@ function vSet() {
     </div>
     <div class="set-find rise" style="--i:1">${I.search}<input id="set-find" type="search" placeholder="Find a setting — theme, audio, sync…" autocomplete="off" aria-label="Find a setting"><button class="set-find-clear" data-act="set-clear" title="Clear filter" aria-label="Clear filter">${I.close}</button></div>
     <nav class="set-jump rise" aria-label="Settings sections">
-      <button data-scroll="set-appearance">Appearance</button><button data-scroll="set-reading">Reading</button><button data-scroll="set-feel">Motion</button><button data-scroll="set-playback">Playback</button><button data-scroll="set-filters">Filters</button><button data-scroll="set-sync">Devices</button><button data-scroll="set-storage">Storage</button><button data-scroll="set-import">Spotify</button>${NATIVE ? '<button data-scroll="set-lock">Lock screen</button>' : ''}<button data-scroll="set-updates">Updates</button><button data-scroll="set-features">Features</button><button data-scroll="set-status">Status</button>
+      <button data-scroll="set-appearance">Appearance</button><button data-scroll="set-reading">Reading</button><button data-scroll="set-feel">Motion</button><button data-scroll="set-playback">Playback</button><button data-scroll="set-filters">Filters</button><button data-scroll="set-edits">Edits</button><button data-scroll="set-sync">Devices</button><button data-scroll="set-storage">Storage</button><button data-scroll="set-import">Spotify</button>${NATIVE ? '<button data-scroll="set-lock">Lock screen</button>' : ''}<button data-scroll="set-updates">Updates</button><button data-scroll="set-features">Features</button><button data-scroll="set-status">Status</button>
     </nav>
     <div id="set-empty" class="empty set-empty" hidden>No setting matches that search.</div><div class="set">
     <div class="box rise" style="--i:0" id="set-appearance"><h2>Appearance</h2><p class="mut">Choose a palette, then tune the accent. Interface styles are layered on top without changing your colors.</p>
@@ -2273,6 +2317,7 @@ function vSet() {
       ${(s.blockedArtists || []).length ? `<div class="chips block-chips">${s.blockedArtists.map(a => `<button class="chip on" data-act="unblock-artist" data-a="${esc(a)}" title="Unblock ${esc(a)}">${esc(a)} ${I.close}</button>`).join('')}</div>` : ''}
       <div class="line"><div class="inline" style="flex:1;justify-content:flex-end"><input class="inp" id="block-artist" type="text" placeholder="Artist name" aria-label="Artist name to block"><button class="btn" data-act="block-artist">Block</button></div></div>
       <div class="line"><div class="l">Listening recap</div><button class="btn" data-go="recap">${I.chart}Open recap</button></div></div>
+    ${featOn('editor') ? editsBoxHTML() : ''}
     <div class="box rise" style="--i:3" id="set-sync"><h2>Devices</h2><p class="mut">Sync playlists, liked songs and listening history between Wavelength installations. Settings and downloads stay on each device.</p><div id="sync-box">${syncHTML()}</div>${syncExtras()}<div id="access-box">${accessHTML()}</div></div>
     ${NATIVE ? `<div class="box rise" style="--i:3" id="set-storage"><h2>Storage</h2>
       <p class="mut">Playlists, liked songs and history live on this phone. Songs stream on demand and are not saved for offline listening yet.</p>
@@ -2510,7 +2555,11 @@ function ensureGraph() {
     freq = new Uint8Array(analyser.frequencyBinCount); wave = new Uint8Array(analyser.fftSize);
     for (const el of audioEls) el.volume = 1;
     applyVol();
-  } catch { actx = null; analyser = null; }
+  } catch {
+    actx = null; analyser = null;
+    // No Web Audio in this webview: the desktop engine can still feed the visualizer through a stand-in analyser.
+    if (window.WLNativeAnalyser) { try { analyser = window.WLNativeAnalyser(); freq = new Uint8Array(256); wave = new Uint8Array(512); } catch {} }
+  }
 }
 /* Loudness balancing uses the actual waveform, not a lookup table. It nudges
    the gain toward a comfortable RMS while a compressor catches peaks. This is
@@ -2783,6 +2832,7 @@ function vizSync() {
     full.textContent = size === 'full' ? 'Exit full screen' : 'Full screen';
     full.classList.toggle('solid', size === 'full');
   }
+  if (window.wlSpectrumFast) window.wlSpectrumFast(on || open);
   if (on && !vizRaf) {
     vizResize();
     if (!vizRO && 'ResizeObserver' in window) { vizRO = new ResizeObserver(vizResize); vizRO.observe($('#viz')); }
@@ -2797,8 +2847,12 @@ function vizSync() {
    desktop, or the track-seeded model on Android. */
 const vizSource = {
   level: (i, n) => {
-    if (!NATIVE && analyser && R.playing) return Math.min(1, (freq[Math.floor(Math.pow(i / n, 1.55) * freq.length * 0.7) + 1] / 255) * 1.12);
-    if (tapLive()) return tapSpec[Math.min(31, Math.floor(i / n * 32))];
+    if (!NATIVE && analyser && R.playing) {
+      // The desktop engine already returns log-spaced display bands, so they are read straight across; a browser
+      // analyser is linear in frequency and keeps the old curve.
+      if (window.__WL_NATIVE_AUDIO__) { const x = (i + 0.5) / n * (freq.length - 1), lo = Math.floor(x), f = x - lo; return Math.min(1, ((freq[lo] * (1 - f) + freq[Math.min(freq.length - 1, lo + 1)] * f) / 255) * 1.15); }
+      return Math.min(1, (freq[Math.floor(Math.pow(i / n, 1.55) * freq.length * 0.7) + 1] / 255) * 1.12);
+    }
     if (tapLive()) return tapSpec[Math.min(31, Math.floor(i / n * 32))];
     if (NATIVE && R.playing) return WLViz.synthLevelAt(i, n, phase, vizSeed * 6.283);
     return 0.06 + 0.04 * Math.sin(phase * 2 + i * 0.55);
@@ -4720,6 +4774,7 @@ const acts = {
     nav('recap/' + f(from) + '~' + f(to));
   },
   'upd-check': () => updLoad(true),
+  'ov-reset': el => ovReset(el.dataset.k === 'all' ? ['title', 'artist', 'art'] : [el.dataset.k]),
   'upd-install': async () => { await updDownload(); },
   'upd-now': async () => { if (await updDownload()) await updRestart(); },
   'upd-restart': async () => { await updRestart(); },

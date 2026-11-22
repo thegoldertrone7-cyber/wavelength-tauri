@@ -1,6 +1,6 @@
-# Handoff — 2.9.5 (ported 2.10 feature set on the 2.9.2 base)
+# Handoff — 2.9.6 (ported 2.10 feature set on the 2.9.2 base)
 
-2.9.5 takes the features that were being prepared as 2.10.0 and ports them onto the hardened 2.9.2 release.
+2.9.6 takes the features that were being prepared as 2.10.0 and ports them onto the hardened 2.9.2 release.
 The 2.9.1/2.9.2 durability, lyrics, sync, updater and Flatpak fixes are all present; none were dropped.
 
 ## Verified for this release
@@ -9,14 +9,18 @@ The 2.9.1/2.9.2 durability, lyrics, sync, updater and Flatpak fixes are all pres
 - `cargo test` and `cargo test --locked`: 38/38 (store recovery/durability, lyrics service and generation,
   bridge 14, diag). `Cargo.lock` is committed and up to date — do not delete it.
 - `node --check` clean on all 18 JS files; `git diff --check` clean.
-- Versions consistent at 2.9.5 in `package.json`, `package-lock.json`, `src-tauri/Cargo.toml`,
+- Versions consistent at 2.9.6 in `package.json`, `package-lock.json`, `src-tauri/Cargo.toml`,
   `src-tauri/tauri.conf.json`, `api.rs::VERSION` and the release workflow's tag gate.
 - Updater public key present in `tauri.conf.json`; endpoints point at the public GitHub `latest.json`.
 - Flatpak job in `.github/workflows/release.yml` plus the standalone `flatpak.yml`; `scripts/build-flatpak.sh`
   is the Tauri/GNOME build (no Electron).
 
-## What shipped in 2.9.5
+## What shipped in 2.9.6
 
+- Settings → Edited song details now resets titles, artists or cover art on their own or all at once, restoring
+  stored originals everywhere and supporting undo.
+- Desktop visualizer: browser-like spectrum scaling, spread-out bass bars, ~22 Hz engine readings eased at frame
+  rate, real output samples for waveforms, and a fallback for webviews without Web Audio.
 - Smarter recap artists (individual artists, variants folded together) and cross-device recap sync with a Sync now button.
 - Themed video in the full-screen player, using the current theme's colours, dots and corner shape.
 - Linux: software compositing by default (`WL_GPU=1` restores acceleration), faster playlist highlighting, and a crash guard that turns on Safe playlist mode.
@@ -52,5 +56,5 @@ The 2.9.1/2.9.2 durability, lyrics, sync, updater and Flatpak fixes are all pres
 - App: `thegoldertrone7-cyber/wavelength-tauri`; mod: `thegoldertrone7-cyber/wavelength-link`.
 - Ports: HTTP core 47823, LAN sync 47824, UDP discovery 38423.
 - Tauri identifier `app.wavelength.music.tauri` (Flatpak id `app.wavelength.music`).
-- Tag `v2.9.5` and push to run the public release workflow; it publishes macOS/Windows/Linux bundles,
+- Tag `v2.9.6` and push to run the public release workflow; it publishes macOS/Windows/Linux bundles,
   signatures, `latest.json` and the Flatpak, gated on the version match and updater key.

@@ -24,7 +24,7 @@ pub const LAN_PORT: u16 = 47824;
 /// UDP port the Android app broadcasts `WAVELENGTH_DISCOVER_V1` on.
 pub const DISCOVERY_PORT: u16 = 38423;
 const DISCOVERY_PROBE: &[u8] = b"WAVELENGTH_DISCOVER_V1";
-pub const VERSION: &str = "2.9.5-tauri";
+pub const VERSION: &str = "2.9.6-tauri";
 
 pub struct AppState {
     pub store: Arc<Store>,
@@ -1269,9 +1269,19 @@ async fn audio_status(State(st): State<Arc<AppState>>) -> Json<Value> {
     Json(json!(st.audio.status()))
 }
 
-async fn audio_spectrum(State(st): State<Arc<AppState>>) -> Response {
-    let bins = st.audio.spectrum();
-    ([(header::CONTENT_TYPE, "application/octet-stream")], bins).into_response()
+async fn audio_spectrum(
+    State(st): State<Arc<AppState>>,
+    Query(q): Query<HashMap<String, String>>,
+) -> Response {
+    // ?v=2 is what the page draws: 256 display bands followed by 512 waveform bytes, one round trip.
+    let body = if q.get("v").map_or(false, |v| v == "2") {
+        let mut b = st.audio.spectrum_view();
+        b.extend(st.audio.wave_view());
+        b
+    } else {
+        st.audio.spectrum()
+    };
+    ([(header::CONTENT_TYPE, "application/octet-stream")], body).into_response()
 }
 
 async fn audio_action(

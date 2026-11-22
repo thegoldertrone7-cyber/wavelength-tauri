@@ -1,5 +1,14 @@
 # Changelog
 
+## 2.9.6
+
+- **Reset edited song details.** Settings → Edited song details resets edited titles, artists or cover art on their
+  own, or everything at once. Resets restore the stored originals everywhere the song appears and can be undone.
+- **Visualizer (desktop).** The spectrum is scaled like the browser analyser instead of pinning at full height, the
+  bass end no longer collapses into a few identical bars, readings arrive about 22 times a second and are eased at
+  the frame rate, the waveform styles use the real output samples, and a webview without Web Audio now falls back to
+  the engine's data instead of showing a flat line.
+
 ## 2.9.5
 
 - **Smarter recap artists.** Songs are split into their individual artists, so "Hazbin Hotel, Blake Roman" counts for

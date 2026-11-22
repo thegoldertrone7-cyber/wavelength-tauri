@@ -215,6 +215,80 @@ impl AudioEngine {
     }
 }
 
+impl AudioEngine {
+    /// Spectrum for drawing: 256 log-spaced bands from about 30 Hz to 16 kHz, scaled like the Web Audio analyser
+    /// (-100 dB to -30 dB) so it sits in the middle of the range instead of pinning at the top. The older
+    /// `spectrum()` is left alone because the Minecraft bridge reads it.
+    pub fn spectrum_view(&self) -> Vec<u8> {
+        const N: usize = 2048;
+        const BINS: usize = 256;
+        let samples: Vec<f32> = match self.tap.lock() {
+            Ok(b) => {
+                let skip = b.len().saturating_sub(N * 2) & !1;
+                // Interleaved stereo: keep one channel so the transform sees a real signal, not L/R alternating.
+                b.range(skip..).copied().step_by(2).collect()
+            }
+            Err(_) => Vec::new(),
+        };
+        let mut out = vec![0u8; BINS];
+        if samples.len() < 512 {
+            return out;
+        }
+        let (fft, window) = fft_plan();
+        let from = samples.len().saturating_sub(N);
+        let mut buf: Vec<rustfft::num_complex::Complex<f32>> = samples[from..]
+            .iter()
+            .zip(window.iter())
+            .map(|(v, w)| rustfft::num_complex::Complex::new(v * w, 0.0))
+            .collect();
+        while buf.len() < N {
+            buf.push(rustfft::num_complex::Complex::new(0.0, 0.0));
+        }
+        fft.process(&mut buf);
+        let mags: Vec<f32> = buf[..N / 2].iter().map(|c| c.norm()).collect();
+        let bin_hz = 48_000.0f32 / N as f32;
+        let (f_lo, f_hi) = (30.0f32, 16_000.0f32);
+        let edge = |i: usize| f_lo * (f_hi / f_lo).powf(i as f32 / BINS as f32) / bin_hz;
+        for (i, slot) in out.iter_mut().enumerate() {
+            let (a, b) = (edge(i), edge(i + 1));
+            let mag = if b - a < 1.0 {
+                // Narrower than one FFT bin (the bass end): interpolate so neighbouring bands differ.
+                let x = ((a + b) / 2.0).max(1.0);
+                let lo = x.floor() as usize;
+                let hi = (lo + 1).min(N / 2 - 1);
+                let t = x - lo as f32;
+                mags[lo] * (1.0 - t) + mags[hi] * t
+            } else {
+                let lo = (a.floor() as usize).max(1);
+                let hi = (b.ceil() as usize).min(N / 2 - 1).max(lo + 1);
+                mags[lo..hi].iter().cloned().fold(0.0, f32::max)
+            };
+            // Hann window gain is 0.5, so a full-scale sine reads N/4; normalise by N like the browser does.
+            let db = 20.0 * (mag * 2.0 / N as f32).max(1e-9).log10();
+            *slot = (((db + 100.0) / 70.0).clamp(0.0, 1.0) * 255.0) as u8;
+        }
+        out
+    }
+
+    /// The newest 512 output samples (one channel) as bytes centred on 128, for the waveform styles.
+    pub fn wave_view(&self) -> Vec<u8> {
+        let samples: Vec<f32> = match self.tap.lock() {
+            Ok(b) => {
+                let skip = b.len().saturating_sub(1024) & !1;
+                b.range(skip..).copied().step_by(2).collect()
+            }
+            Err(_) => Vec::new(),
+        };
+        let mut out = vec![128u8; 512];
+        let n = samples.len().min(512);
+        let off = samples.len() - n;
+        for i in 0..n {
+            out[512 - n + i] = (128.0 + samples[off + i].clamp(-1.0, 1.0) * 127.0) as u8;
+        }
+        out
+    }
+}
+
 fn audio_thread(
     rx: Receiver<Cmd>,
     tx: Sender<Cmd>,

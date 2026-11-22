@@ -38,7 +38,10 @@
   }
 
   /* ── FFT tap for the visualizer ────────────────────────────────────── */
-  var spectrum = { at: 0, bins: new Uint8Array(256), level: 0 };
+  /* `target` is the newest reading from the engine (about 22 times a second while the visualizer is up); `bins` is what
+     the page reads, eased toward it on every read so bars rise quickly and fall smoothly at the page's frame rate
+     instead of stepping each time a reading arrives. */
+  var spectrum = { at: 0, bins: new Uint8Array(256), target: new Uint8Array(256), wave: new Uint8Array(512), waveAt: 0, level: 0, eased: 0 };
 
   /* ── volume bridge ─────────────────────────────────────────────────── */
   /* The UI keeps its volume on a GainNode that feeds the (nonexistent)
@@ -75,35 +78,61 @@
   }
   setInterval(syncVolume, 150);
 
+  var fastPoll = false;
+  function ease() {
+    var now = performance.now(), dt = Math.min(0.1, Math.max(0, (now - (spectrum.eased || now)) / 1000));
+    if (dt < 0.004) return;
+    spectrum.eased = now;
+    var up = 1 - Math.exp(-dt * 30), down = 1 - Math.exp(-dt * 8), sum = 0;
+    for (var i = 0; i < spectrum.bins.length; i++) {
+      var cur = spectrum.bins[i], t = spectrum.target[i];
+      cur += (t - cur) * (t > cur ? up : down);
+      spectrum.bins[i] = cur;
+      sum += cur;
+    }
+    spectrum.level = Math.min(1, sum / (spectrum.bins.length * 255) * 2.2);
+  }
   function pollSpectrum() {
     if (document.hidden) return;
-    if (Date.now() - spectrum.at < 90) return;
+    var gap = fastPoll ? 40 : 400;
+    if (Date.now() - spectrum.at < gap) return;
     spectrum.at = Date.now();
-    fetch(BASE + '/api/audio/spectrum', { cache: 'no-store' })
+    fetch(BASE + '/api/audio/spectrum?v=2', { cache: 'no-store' })
       .then(function (r) { return r.arrayBuffer(); })
       .then(function (buf) {
         var next = new Uint8Array(buf);
-        var sum = 0;
-        for (var i = 0; i < next.length; i++) {
-          var v = Math.max(next[i], spectrum.bins[i] * 0.72);
-          spectrum.bins[i] = v;
-          sum += v;
+        if (next.length >= 256 + 512) {
+          spectrum.target.set(next.subarray(0, 256));
+          spectrum.wave.set(next.subarray(256, 256 + 512));
+          spectrum.waveAt = performance.now();
+        } else {
+          // An older core that only knows the plain spectrum.
+          for (var i = 0; i < 256 && i < next.length; i++) spectrum.target[i] = next[i];
         }
-        spectrum.level = Math.min(1, sum / (next.length * 255) * 3);
       })
       .catch(function () {});
   }
-  setInterval(pollSpectrum, 120);
+  setInterval(pollSpectrum, 20);
+  /* The page says when the visualizer is on screen; otherwise the engine is only asked a few times a second. */
+  window.wlSpectrumFast = function (on) { fastPoll = !!on; };
 
   function patchAnalyser(analyser) {
     try {
       analyser.getByteFrequencyData = function (arr) {
+        ease();
         var n = Math.min(arr.length, spectrum.bins.length);
         for (var i = 0; i < n; i++) arr[i] = spectrum.bins[i];
         for (var j = n; j < arr.length; j++) arr[j] = 0;
         return arr;
       };
       analyser.getByteTimeDomainData = function (arr) {
+        ease();
+        if (performance.now() - spectrum.waveAt < 400) {
+          // The real output samples, stretched or squeezed to the size asked for.
+          var w = spectrum.wave, m = arr.length;
+          for (var k = 0; k < m; k++) arr[k] = w[Math.min(w.length - 1, Math.floor(k * w.length / m))];
+          return arr;
+        }
         var t = performance.now() / 1000;
         var amp = 3 + spectrum.level * 46;
         for (var i = 0; i < arr.length; i++) {
@@ -113,15 +142,20 @@
         return arr;
       };
       analyser.getFloatFrequencyData = function (arr) {
+        ease();
         for (var i = 0; i < arr.length; i++) {
           var v = spectrum.bins[Math.min(i, spectrum.bins.length - 1)] / 255;
-          arr[i] = v > 0 ? 20 * Math.log10(v) : -100;
+          arr[i] = -100 + v * 70;
         }
         return arr;
       };
     } catch (e) {}
     return analyser;
   }
+  /* For a webview with no Web Audio at all: a stand-in analyser fed by the engine. */
+  window.WLNativeAnalyser = function () {
+    return patchAnalyser({ fftSize: 512, frequencyBinCount: 256, smoothingTimeConstant: 0, connect: function () {}, disconnect: function () {} });
+  };
 
   function patchWebAudio() {
     var AC = window.AudioContext || window.webkitAudioContext;
