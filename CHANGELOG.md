@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 2.9.7
 
 - **Amazon Music import.** Import → Amazon Music playlist takes a CSV, TSV, TXT, JSON or M3U export (from a playlist
   converter) by file picker or drag and drop, reads header columns (Track name, Artist, Album, Duration), and has no
@@ -11,8 +11,9 @@
   Linux), the title bar follows the app's light/dark mode, no white flash on start, timers are no longer throttled
   when the window is minimised, and the Windows 11 style is lighter (no stacked blur), with a selection pill,
   focus ring and Fluent scrollbars. Windows opens in the Windows 11 style once; any other style stays if chosen.
-- **Android.** Clearer error when the phone's YouTube engine fails, and an opt-in "Backup playback servers" setting
-  that asks a public Piped server for the audio. The underlying fix (a newer NewPipeExtractor) is in the Android app.
+- **Android.** Fixed songs skipping on the phone: the Android build now uses real HTML audio elements instead of the
+  desktop-only native-audio element, and ships a newer NewPipeExtractor. Also adds a clearer error when YouTube playback
+  fails and an opt-in "Backup playback servers" setting that asks a public Piped server for the audio.
 
 - **Reset edited song details.** Settings → Edited song details resets edited titles, artists or cover art on their
   own, or everything at once. Resets restore the stored originals everywhere the song appears and can be undone.
