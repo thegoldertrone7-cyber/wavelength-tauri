@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 2.9.5
 
 - **Smarter recap artists.** Songs are split into their individual artists, so "Hazbin Hotel, Blake Roman" counts for
   Hazbin Hotel and for Blake Roman, and no combined row appears next to Blake Roman. Variants (Cast, Topic, VEVO,

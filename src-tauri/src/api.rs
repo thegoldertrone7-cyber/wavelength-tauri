@@ -24,7 +24,7 @@ pub const LAN_PORT: u16 = 47824;
 /// UDP port the Android app broadcasts `WAVELENGTH_DISCOVER_V1` on.
 pub const DISCOVERY_PORT: u16 = 38423;
 const DISCOVERY_PROBE: &[u8] = b"WAVELENGTH_DISCOVER_V1";
-pub const VERSION: &str = "2.9.4-tauri";
+pub const VERSION: &str = "2.9.5-tauri";
 
 pub struct AppState {
     pub store: Arc<Store>,
