@@ -1624,7 +1624,14 @@ fn start_lan_discovery(st: Arc<AppState>) {
             DISCOVERY_PORT,
         )) {
             Ok(s) => s,
-            Err(_) => return,
+            Err(e) => {
+                // Let the next "Host" press try again instead of staying dead until the app restarts.
+                crate::diag::log(&st.store.dir, &format!("sync: discovery port {DISCOVERY_PORT} unavailable: {e}"));
+                if let Ok(mut started) = st.discovery_started.lock() {
+                    *started = false;
+                }
+                return;
+            }
         };
         let _ = sock.set_broadcast(true);
         let mut buf = [0u8; 128];
@@ -1681,7 +1688,13 @@ fn start_lan_host(st: Arc<AppState>) {
     std::thread::spawn(move || {
         let rt = match tokio::runtime::Builder::new_current_thread().enable_all().build() {
             Ok(rt) => rt,
-            Err(_) => return,
+            Err(e) => {
+                crate::diag::log(&state.store.dir, &format!("sync: could not start the LAN runtime: {e}"));
+                if let Ok(mut started) = state.lan_started.lock() {
+                    *started = false;
+                }
+                return;
+            }
         };
         rt.block_on(async move {
             // The Android client and older desktop builds talk to `/api/sync/*`
@@ -1710,9 +1723,19 @@ fn start_lan_host(st: Arc<AppState>) {
                 .layer(CorsLayer::permissive());
             let listener = match tokio::net::TcpListener::bind(("0.0.0.0", LAN_PORT)).await {
                 Ok(l) => l,
-                Err(_) => return,
+                Err(e) => {
+                    crate::diag::log(&state.store.dir, &format!("sync: could not listen on port {LAN_PORT}: {e}"));
+                    if let Ok(mut started) = state.lan_started.lock() {
+                        *started = false;
+                    }
+                    return;
+                }
             };
             let _ = axum::serve(listener, app).await;
+            // The server ended (it should not); allow hosting to be started again.
+            if let Ok(mut started) = state.lan_started.lock() {
+                *started = false;
+            }
         });
     });
 }
@@ -2098,22 +2121,43 @@ fn hostname() -> String {
 /// them and the UDP discovery reply points at the same port. Link-local
 /// (169.254.x.x) addresses are useless for sync, so they are skipped.
 fn sync_urls() -> Vec<String> {
-    let mut urls: Vec<String> = Vec::new();
+    // Linux machines often also have docker0, virbr0, veth*, tailscale0 and similar. Their addresses cannot be
+    // reached from a phone on the Wi-Fi, and the first interface in the list is frequently one of them, so rank
+    // real network cards first and leave container and VM bridges out entirely.
+    fn skip(name: &str) -> bool {
+        let n = name.to_ascii_lowercase();
+        ["docker", "br-", "veth", "virbr", "vmnet", "vboxnet", "lxc", "lxd", "podman", "cni", "flannel", "cali", "kube"]
+            .iter()
+            .any(|p| n.starts_with(p))
+    }
+    fn rank(name: &str, ip: std::net::Ipv4Addr) -> u8 {
+        let n = name.to_ascii_lowercase();
+        let wired_or_wifi = ["en", "eth", "wl", "wlan", "wi-fi", "ethernet"].iter().any(|p| n.starts_with(p));
+        let private = ip.is_private();
+        match (wired_or_wifi, private) {
+            (true, true) => 0,
+            (false, true) => 1,
+            (true, false) => 2,
+            _ => 3,
+        }
+    }
+    let mut found: Vec<(u8, String)> = Vec::new();
     if let Ok(interfaces) = if_addrs::get_if_addrs() {
         for iface in interfaces {
-            let if_addrs::IfAddr::V4(v4) = iface.addr else {
+            let if_addrs::IfAddr::V4(v4) = &iface.addr else {
                 continue;
             };
-            if v4.ip.is_loopback() || v4.ip.is_link_local() || v4.ip.is_unspecified() {
+            if v4.ip.is_loopback() || v4.ip.is_link_local() || v4.ip.is_unspecified() || skip(&iface.name) {
                 continue;
             }
             let url = format!("http://{}:{}", v4.ip, LAN_PORT);
-            if !urls.contains(&url) {
-                urls.push(url);
+            if !found.iter().any(|(_, u)| *u == url) {
+                found.push((rank(&iface.name, v4.ip), url));
             }
         }
     }
-    urls
+    found.sort_by_key(|(r, _)| *r);
+    found.into_iter().map(|(_, u)| u).collect()
 }
 
 /// Broadcast addresses to send a discovery probe to, including the global one.

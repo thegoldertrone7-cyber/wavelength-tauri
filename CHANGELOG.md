@@ -1,5 +1,33 @@
 # Changelog
 
+## 2.9.9
+
+**Windows 11**
+- **Full-screen player resolution.** The cover now loads YouTube's 1280x720 image instead of the 320x180 list thumbnail
+  (falling back to the small one when none exists), the full-screen visualizer draws at the screen's real pixel density,
+  and it redraws when the window moves to another monitor or Windows display scaling changes.
+- **Thumbnail rendering.** Only the first screenful of rows and tiles animates, off-screen rows are skipped by layout and
+  paint (`content-visibility`), covers are contained, and the closed full-screen player is hidden so its two large blur
+  layers are no longer kept alive.
+
+**Linux**
+- **Device sync.** The host address now skips Docker/VM/container bridges (docker0, virbr0, veth, ...) and prefers a real
+  Wi-Fi or Ethernet address, so phones are given a reachable URL. A failed bind of the sync or discovery port is logged to
+  `wavelength.log` and no longer leaves hosting stuck "on" until the app restarts.
+- **Video.** Software compositing is no longer forced (it prevents WebKitGTK from drawing `<video>`); set
+  `WL_SAFE_RENDER=1` to bring it back. The AppImage now bundles the GStreamer media framework. The player asks for WebM
+  first when H.264 is unavailable and logs the real decoder error.
+- **Updater.** `.deb`/`.rpm` installs and AppImages in a read-only folder now say so up front and link the installer
+  instead of downloading a bundle that cannot be installed. Update errors are written to `wavelength.log`.
+
+**Quality of life**
+- Settings → Playback → **Volume step** (1, 2, 5, 10 or 20%) for the arrow keys and mouse wheel.
+- Import now lists **which songs could not be found** on YouTube.
+- "Spotify import" is now just **Import**.
+- **Custom CSS** moved into Appearance.
+- **Playlists can be moved into other playlists** (Move button on a playlist). Nested playlists show indented in the
+  sidebar and inside their parent; deleting a parent moves its playlists up a level.
+
 ## 2.9.8
 
 - **Windows no longer needs winget installs.** The app downloads yt-dlp, ffmpeg and ffprobe itself on first start

@@ -61,9 +61,15 @@ impl Kind {
             Kind::Flatpak => "flatpak",
         }
     }
-    /// A Flatpak is read-only and updated by Flatpak, so the app must not try to overwrite itself.
+    /// A Flatpak is read-only and updated by Flatpak. A .deb/.rpm is owned by root and updated by the package
+    /// manager or a new installer, so the app must not download a bundle it cannot install. An AppImage can replace
+    /// itself only if the folder it lives in is writable.
     fn can_install(self) -> bool {
-        self != Kind::Flatpak
+        match self {
+            Kind::Desktop => true,
+            Kind::AppImage => appimage_writable(),
+            Kind::Package | Kind::Flatpak => false,
+        }
     }
 }
 
@@ -81,6 +87,31 @@ fn install_kind() -> Kind {
 #[cfg(not(target_os = "linux"))]
 fn install_kind() -> Kind {
     Kind::Desktop
+}
+
+/// An AppImage replaces itself in place, which needs write access to its folder (not true under /opt or a read-only
+/// mount). Probing with a throwaway file is the only check that matches what the installer will actually do.
+#[cfg(target_os = "linux")]
+fn appimage_writable() -> bool {
+    let Some(path) = std::env::var_os("APPIMAGE").map(std::path::PathBuf::from) else {
+        return false;
+    };
+    let Some(dir) = path.parent() else {
+        return false;
+    };
+    let probe = dir.join(format!(".wavelength-write-test-{}", std::process::id()));
+    match std::fs::File::create(&probe) {
+        Ok(_) => {
+            let _ = std::fs::remove_file(&probe);
+            true
+        }
+        Err(_) => false,
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn appimage_writable() -> bool {
+    true
 }
 
 fn fail(code: StatusCode, msg: impl Into<String>) -> ApiError {
@@ -113,6 +144,8 @@ pub struct Updates {
     checked_at: AtomicI64,
     error: Mutex<String>,
     busy: AtomicBool,
+    /// Data folder, so update failures reach wavelength.log (a Linux install has no console to read).
+    log_dir: Mutex<Option<std::path::PathBuf>>,
 }
 
 impl Default for Updates {
@@ -133,6 +166,7 @@ impl Updates {
             checked_at: AtomicI64::new(0),
             error: Mutex::new(String::new()),
             busy: AtomicBool::new(false),
+            log_dir: Mutex::new(None),
         }
     }
 
@@ -142,7 +176,16 @@ impl Updates {
         self.configured.store(configured, Ordering::SeqCst);
     }
 
+    pub fn set_log_dir(&self, dir: std::path::PathBuf) {
+        *lock(&self.log_dir) = Some(dir);
+    }
+
     fn set_error(&self, msg: &str) {
+        if !msg.is_empty() {
+            if let Some(dir) = lock(&self.log_dir).clone() {
+                crate::diag::log(&dir, &format!("updater ({}): {msg}", install_kind().name()));
+            }
+        }
         *lock(&self.error) = msg.to_string();
     }
 
@@ -207,10 +250,12 @@ impl Updates {
     /// Downloads the update found by the last check and verifies its signature.
     pub async fn download(&self) -> Result<(), ApiError> {
         if !install_kind().can_install() {
-            return Err(fail(
-                StatusCode::BAD_REQUEST,
-                "This Flatpak install is updated by downloading the new Flatpak from the releases page",
-            ));
+            let msg = match install_kind() {
+                Kind::Flatpak => "This Flatpak install is updated by downloading the new Flatpak from the releases page",
+                Kind::Package => "This install came from a .deb or .rpm package. Download the newest package from the releases page",
+                _ => "This AppImage is in a folder Wavelength cannot write to. Move it somewhere you own (such as ~/Applications) or download the newest one",
+            };
+            return Err(fail(StatusCode::BAD_REQUEST, msg));
         }
         let mut found = lock(&self.found).clone();
         if found.is_none() {

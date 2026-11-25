@@ -25,6 +25,8 @@ const localBadge = t => t && t.localId
   : '';
 
 const NATIVE = typeof window.AndroidBridge !== 'undefined';
+/* Volume change per arrow key or wheel notch, as a fraction. Settings → Playback → Volume step. */
+const volStep = () => { const n = +(typeof S !== 'undefined' && S.settings && S.settings.volStep); return [1, 2, 5, 10, 20].includes(n) ? n / 100 : 0.05; };
 const nativeLockAllowed = () => {
   if (!NATIVE) return true;
   try { return !!window.AndroidBridge.lockScreenAllowed(); } catch { return true; }
@@ -163,11 +165,29 @@ function rememberSearch(q) {
 }
 
 /* ═════════ state ═════════ */
-const DEF = { playlists: [], liked: [], history: [], overrides: {}, lyricsCustom: {}, listening: { v: 1, devices: {} }, settings: { theme: 'dark', style: 'nothing', accent: null, viz: true, vizStyle: 'matrix', vizSize: 'md', vizSizePrev: 'md', lockVisualizer: true, autoplay: true, gapless: true, resume: true, motion: 'system', readSize: 'default', contrast: false, sleepUntil: 0, quality: 192, streamQuality: 'best', volume: 0.8, smartVolume: false, noAi: false, blockedArtists: [], skipCredits: false, skipIntro: 'off', skipOutro: 'off', skipBreaks: 'off', skipSure: 'balanced', skipCrowd: true, skipSilence: true, skipMemory: {}, scrollbar: 'pill', navPos: 'left', dockPos: 'bottom', contentWidth: 'full', dotBg: false, dotOpacity: 22, dotScale: 22, customCss: '', netMode: 'auto', autoUpdate: true, updCheckedAt: 0, shuffleSmart: true, stayInList: true, syncOnOpen: false, syncDaily: false, syncControl: false, syncLast: 0, lockLayout: 'art', lockTheme: 'accent', lockControls: true, lockHide: 9, lockHint: true, pinned: [], perf: 'auto', realViz: false, off: [], setupDone: false, vizHidden: [], discord: false, discordId: '', lyrics: true, headphonesPause: true, plSort: 'added', plView: 'list', swipeRows: true, speed: 1, npVideo: false, npVideoBig: false, plSafe: false, backupStreams: false } };
+const DEF = { playlists: [], liked: [], history: [], overrides: {}, lyricsCustom: {}, listening: { v: 1, devices: {} }, settings: { theme: 'dark', style: 'nothing', accent: null, viz: true, vizStyle: 'matrix', vizSize: 'md', vizSizePrev: 'md', lockVisualizer: true, autoplay: true, gapless: true, resume: true, motion: 'system', readSize: 'default', contrast: false, sleepUntil: 0, quality: 192, streamQuality: 'best', volume: 0.8, volStep: 5, smartVolume: false, noAi: false, blockedArtists: [], skipCredits: false, skipIntro: 'off', skipOutro: 'off', skipBreaks: 'off', skipSure: 'balanced', skipCrowd: true, skipSilence: true, skipMemory: {}, scrollbar: 'pill', navPos: 'left', dockPos: 'bottom', contentWidth: 'full', dotBg: false, dotOpacity: 22, dotScale: 22, customCss: '', netMode: 'auto', autoUpdate: true, updCheckedAt: 0, shuffleSmart: true, stayInList: true, syncOnOpen: false, syncDaily: false, syncControl: false, syncLast: 0, lockLayout: 'art', lockTheme: 'accent', lockControls: true, lockHide: 9, lockHint: true, pinned: [], perf: 'auto', realViz: false, off: [], setupDone: false, vizHidden: [], discord: false, discordId: '', lyrics: true, headphonesPause: true, plSort: 'added', plView: 'list', swipeRows: true, speed: 1, npVideo: false, npVideoBig: false, plSafe: false, backupStreams: false } };
 
 /* ── Pinned playlists: quick access in the sidebar, on Home, with Alt+1..9 and Android launcher shortcuts ── */
 const pinnedPls = () => (Array.isArray(S.settings.pinned) ? S.settings.pinned : []).map(id => S.playlists.find(p => p.id === id)).filter(Boolean);
 const isPinned = id => (S.settings.pinned || []).includes(id);
+/* Playlists can sit inside other playlists: pl.parent holds the id of the outer one. A parent only counts if it exists
+   and does not lead back to the playlist itself, so a deleted parent or a bad sync can never hide or loop a playlist. */
+const plById = id => S.playlists.find(p => p.id === id);
+function plUp(p) {
+  const o = p && p.parent ? plById(p.parent) : null;
+  if (!o || o === p) return null;
+  const seen = new Set([p.id]);
+  for (let x = o; x; x = x.parent ? plById(x.parent) : null) { if (seen.has(x.id)) return null; seen.add(x.id); }
+  return o;
+}
+const plKids = id => S.playlists.filter(p => p.parent === id && plUp(p));
+const plDepth = p => { let d = 0, x = plUp(p); while (x && d < 12) { d++; x = plUp(x); } return d; };
+function plTree() {
+  const out = [], walk = p => { out.push(p); plKids(p.id).forEach(walk); };
+  S.playlists.filter(p => !plUp(p)).forEach(walk);
+  return out;
+}
+function plBelow(id) { const out = []; const walk = i => plKids(i).forEach(k => { out.push(k); walk(k.id); }); walk(id); return out; }
 function togglePin(id) {
   const a = Array.isArray(S.settings.pinned) ? S.settings.pinned.filter(x => S.playlists.some(p => p.id === x)) : [];
   const i = a.indexOf(id);
@@ -346,6 +366,10 @@ function updHTML() {
   line += '</div></div>';
   if (a && a.needsInstaller) line += u.how === 'flatpak'
     ? '<p class="meta">This copy is a Flatpak, which cannot replace itself. Download the new .flatpak from the releases page and install it over this one; your library stays.</p>'
+    : u.how === 'package'
+    ? '<p class="meta">This copy was installed from a .deb or .rpm package, which only your package manager can replace. Download the new package from the releases page and install it over this one; your library stays. The AppImage build updates itself inside the app.</p>'
+    : u.how === 'appimage'
+    ? '<p class="meta">This AppImage sits in a folder Wavelength cannot write to, so it cannot replace itself. Move it to a folder you own (for example ~/Applications) and open it from there, or download the new AppImage.</p>'
     : '<p class="meta">This update changes the app itself, so install the new version once. After that, updates arrive inside the app.</p>';
   return line;
 }
@@ -398,7 +422,7 @@ const FEATURES = [
   ['lyrics', 'Lyrics', 'Synced lyrics from several lyric databases.'],
   ['skipper', 'Intro and outro skipper', 'Skips intros, outros and spoken breaks.'],
   ['recap', 'Listening recap', 'Stats by year, month or custom dates.'],
-  ['import', 'Spotify import', 'Bring in playlists, albums and song lists.'],
+  ['import', 'Import', 'Bring in playlists, albums and song lists.'],
   ['downloads', 'Downloads', 'MP3 downloads and local files.'],
   ['editor', 'Song editor', 'Change a song’s title, artist and artwork.'],
   ['sync', 'Device sync', 'Keep your library in step across devices.'],
@@ -1264,7 +1288,25 @@ function setDm(playing) {
 }
 
 /* ═════════ builders ═════════ */
-const art = (t, c = '') => `<div class="art ${c}">${t && t.art ? `<img src="${esc(t.art)}" loading="lazy" decoding="async" alt="" onerror="this.remove()">` : ''}<span class="art-d"></span></div>`;
+const art = (t, c = '') => `<div class="art ${c}">${t && t.art ? `<img src="${esc(t.art)}" loading="lazy" decoding="async" fetchpriority="low" draggable="false" alt="" onerror="this.remove()">` : ''}<span class="art-d"></span></div>`;
+/* Lists show YouTube's 320x180 thumbnail, which is right for a 42 px row but soft when the full-screen player blows it
+   up to 300+ px (worse on a 125–200% Windows display). The player asks for the 1280x720 version instead and quietly
+   falls back to the small one when YouTube has no large image for that video (it answers with a 120 px placeholder). */
+function hiResArt(u) {
+  u = String(u || '');
+  let m = /^(https:\/\/i\.ytimg\.com\/vi\/[\w-]{6,}\/)(?:default|mqdefault|hqdefault|sddefault)\.jpg(\?.*)?$/.exec(u);
+  if (m) return m[1] + 'maxresdefault.jpg';
+  m = /^(https:\/\/(?:lh3\.googleusercontent\.com|yt3\.ggpht\.com)\/.+?)=w\d+-h\d+(.*)$/.exec(u);
+  if (m) return m[1] + '=w1024-h1024' + m[2];
+  return '';
+}
+window.wlArtOk = img => { if (img.naturalWidth && img.naturalWidth <= 160 && img.dataset.lo && img.src !== img.dataset.lo) img.src = img.dataset.lo; };
+window.wlArtFail = img => { const lo = img.dataset.lo; if (lo && img.src !== lo) img.src = lo; else img.remove(); };
+const artHi = t => {
+  const lo = t && t.art ? String(t.art) : '', hi = hiResArt(lo);
+  if (!hi) return art(t);
+  return `<div class="art"><img src="${esc(hi)}" data-lo="${esc(lo)}" decoding="async" draggable="false" alt="" onload="wlArtOk(this)" onerror="wlArtFail(this)"><span class="art-d"></span></div>`;
+};
 
 /* Playlist covers intentionally stay small and serialisable: a logo (emoji,
    icon or monogram), an uploaded/pulled picture, and an optional tone. Older
@@ -1295,11 +1337,11 @@ const cover = (pl, c = '') => {
 };
 const isCur = t => R.cur && (R.cur === t || uid(R.cur) === uid(t));
 const liked = t => S.liked.some(x => uid(x) === uid(t) || (x.ytId && x.ytId === t.ytId));
-const tile = (img, title, sub, attrs, i = 0, fab = '') => `<div class="tile rise" style="--i:${Math.min(i, 18)}" ${attrs}>${img}<div class="tt">${esc(title)}</div><div class="ts">${esc(sub)}</div>${fab}</div>`;
+const tile = (img, title, sub, attrs, i = 0, fab = '') => `<div class="tile${i < 18 ? ' rise' : ''}" style="--i:${Math.min(i, 18)}" ${attrs}>${img}<div class="tt">${esc(title)}</div><div class="ts">${esc(sub)}</div>${fab}</div>`;
 const loader = () => '<div class="loader"><i></i><i></i><i></i></div>';
 function rows(list, ctx, offset = 0) {
   const safe = !!S.settings.plSafe;   // safe mode: no pictures and no entrance animation, so a fragile webview only draws text
-  return list.map((t, i) => `<div class="row${safe ? '' : ' rise'}${isCur(t) ? ' on' : ''}${t.miss ? ' miss' : ''}" data-ctx="${ctx}" data-i="${i + offset}" data-k="${esc(uid(t))}"${safe ? '' : ` style="--i:${Math.min(i, 14)}"`}>
+  return list.map((t, i) => `<div class="row${safe || i + offset >= 14 ? '' : ' rise'}${isCur(t) ? ' on' : ''}${t.miss ? ' miss' : ''}" data-ctx="${ctx}" data-i="${i + offset}" data-k="${esc(uid(t))}"${safe ? '' : ` style="--i:${Math.min(i, 14)}"`}>
     <div class="n"><span>${i + offset + 1}</span><em class="eq"><i></i><i></i><i></i></em><b class="pl">${I.playS}</b></div>
     <div class="who">${safe ? '<div class="art sm"><span class="art-d"></span></div>' : art(t, 'sm')}<div><div class="t">${esc(t.title)}</div><div class="a">${esc(t.artist)}${t.localId ? ' ' + localBadge(t) : ''}${t.miss ? ' · no YouTube match' : ''}</div></div></div>
     <div class="al">${esc(t.album || '')}</div><div class="d">${fmt(t.duration)}</div>
@@ -1584,16 +1626,16 @@ function vHome() {
     <h1 class="big">WAVE<br>LENGTH</h1><p>${NATIVE ? 'Search YouTube, play ad-free, and keep your playlists on this phone. A computer is optional.' : 'Bring your Spotify playlists over, play them ad-free, and download anything as MP3.'}</p>
     <div class="acts">${NATIVE
       ? `<button class="btn solid" data-go="search">${I.search}Search music</button><button class="btn" data-go="import">${I.import}Import a list</button>`
-      : `<button class="btn solid" data-go="import">${I.import}Import from Spotify</button><button class="btn" data-go="search">${I.search}Search music</button>`}
+      : `<button class="btn solid" data-go="import">${I.import}Import</button><button class="btn" data-go="search">${I.search}Search music</button>`}
       ${R.cur && !R.playing ? `<button class="btn acc" data-act="resume">${I.playS}Resume</button>` : ''}
       ${S.liked.length ? `<button class="btn" data-act="playliked">${I.heartF}Play liked</button>` : ''}
       ${S.playlists.some(p => p.tracks.length) ? `<button class="btn" data-act="smartshuffle">${I.shuffle}Smart shuffle</button>` : ''}</div></div>
     ${pinnedPls().length ? `<div class="sec"><h2>Pinned</h2></div><div class="grid">${pinnedPls().map((p, i) => plTile(p, i)).join('')}</div>` : ''}
     ${h.length ? `<div class="sec"><h2>Jump back in</h2></div><div class="grid">${h.map((t, i) => tile(art(t), t.title, t.artist, `data-act="playhist" data-i="${i}"`, i)).join('')}</div>` : ''}
     ${pls.length ? `<div class="sec"><h2>Your playlists</h2><a data-go="library">See all</a></div><div class="grid">${pls.map((p, i) => plTile(p, i)).join('')}</div>`
-      : `<div class="sec"><h2>Start here</h2></div><div class="empty">No playlists yet. Import one from Spotify or create your own from the sidebar.</div>`}`;
+      : `<div class="sec"><h2>Start here</h2></div><div class="empty">No playlists yet. Import one or create your own from the sidebar.</div>`}`;
 }
-const plTile = (p, i) => tile(cover(p), p.name, `${p.tracks.length} songs`, `data-go="playlist/${p.id}"`, i, `<button class="fab" data-act="playpl" data-id="${p.id}" title="Play">${I.playS}</button>`);
+const plTile = (p, i) => tile(cover(p), p.name, `${p.tracks.length} songs${plKids(p.id).length ? ' · ' + plKids(p.id).length + ' inside' : ''}`, `data-go="playlist/${p.id}"`, i, `<button class="fab" data-act="playpl" data-id="${p.id}" title="Play">${I.playS}</button>`);
 
 const SEARCH_CACHE = new Map(), SEARCH_CACHE_TTL = 5 * 60 * 1000, SEARCH_CACHE_MAX = 30;
 const searchKey = q => q.toLowerCase().replace(/\s+/g, ' ').trim();
@@ -1677,7 +1719,7 @@ function vLib() {
     <div class="acts"><button class="btn" data-act="smartshuffle" title="Balanced shuffle across every playlist">${I.shuffle}Smart shuffle</button><button class="btn" data-act="remix">${I.mix}Remix playlists</button></div></div><div class="grid">
     ${tile(`<div class="cover liked">${I.heartF}</div>`, 'Liked Songs', `${S.liked.length} songs`, 'data-go="liked"', 0, `<button class="fab" data-act="playliked" title="Play">${I.playS}</button>`)}
     ${tile(`<div class="cover local-cover">${I.disc}</div>`, 'Local files', R.localReady ? `${R.local.length} songs${lossless ? ' · ' + lossless + ' lossless' : ''}` : 'FLAC, WAV, ALAC', 'data-go="local"', 1)}
-    ${S.playlists.map((p, i) => plTile(p, i + 2)).join('')}
+    ${S.playlists.filter(p => !plUp(p)).map((p, i) => plTile(p, i + 2)).join('')}
     <div class="tile new rise" style="--i:${S.playlists.length + 2}" data-act="newpl">${I.plus}<div>New playlist</div></div></div>`;
 }
 
@@ -1697,10 +1739,11 @@ function vPlaylist(id) {
         <button class="btn" data-act="shufflepl" data-id="${id}">${I.shuffle}Shuffle</button>
         ${NATIVE ? '' : `<button class="btn" data-act="dlall" data-id="${id}">${I.dl}Download all</button>`}
         <button class="btn" data-act="plmore" data-id="${id}" aria-haspopup="menu">${I.more}More</button>
-        ${isL ? '' : `<button class="btn${isPinned(pl.id) ? ' on' : ''}" data-act="pinpl" data-id="${pl.id}" aria-pressed="${isPinned(pl.id)}">${isPinned(pl.id) ? 'Unpin' : 'Pin'}</button><button class="btn" data-act="editpl" data-id="${pl.id}">${I.image}Edit</button><button class="btn dng" data-act="delpl" data-id="${pl.id}">${I.trash}Delete</button>`}
+        ${isL ? '' : `<button class="btn${isPinned(pl.id) ? ' on' : ''}" data-act="pinpl" data-id="${pl.id}" aria-pressed="${isPinned(pl.id)}">${isPinned(pl.id) ? 'Unpin' : 'Pin'}</button><button class="btn" data-act="plmove" data-id="${pl.id}">Move</button><button class="btn" data-act="editpl" data-id="${pl.id}">${I.image}Edit</button><button class="btn dng" data-act="delpl" data-id="${pl.id}">${I.trash}Delete</button>`}
         ${un ? `<button class="btn" data-act="matchrest" data-id="${id}">Match ${un} remaining</button>` : ''}</div>
       <div class="matchbar${MQ.total ? ' on' : ''}" id="match-bar"><div class="lbl" id="match-lbl"></div><div class="dtw" style="pointer-events:none"><div class="dt"><i id="match-fill"></i></div></div></div>
     </div></div>
+    ${!isL && plKids(id).length ? `<div class="sec"><h2>Inside this playlist</h2></div><div class="grid">${plKids(id).map((k, i) => plTile(k, i)).join('')}</div>` : ''}
     <div class="list-tools">
       ${pl.tracks.length > 6 ? `<input class="inp pl-find" id="pl-find" type="search" placeholder="Filter this ${isL ? 'list' : 'playlist'}" value="${esc(R.plFilter)}" autocomplete="off" spellcheck="false" aria-label="Filter songs">` : ''}
       <div class="chips sort-chips" aria-label="Sort songs">${SORT_KEYS.map(([k, n]) => `<button class="chip${(S.settings.plSort || 'added') === k ? ' on' : ''}" data-act="pl-sort" data-k="${k}">${n}</button>`).join('')}</div>
@@ -2326,7 +2369,11 @@ function vSet() {
       <div class="swatch-row"><span class="swatch-label">Custom</span><div class="sw"><input type="color" id="accent-pick" value="${s.accent || defAccent()}" title="Custom colour"></div><span class="meta" style="margin-left:8px">${esc(s.accent || 'From theme')}</span></div>
       <div class="set-label">Interface style</div>
       <div class="chips">${STYLES.map(k => { const [n, d] = STYLE_INFO[k]; return `<button class="chip${s.style === k ? ' on' : ''}" data-act="style" data-k="${k}" title="${esc(d)}" aria-label="${esc(n)}: ${esc(d)}">${esc(n)}</button>`; }).join('')}</div>
-      <details class="style-guide"><summary>What each interface style is for</summary><div class="style-guide-list">${STYLES.map(k => { const [n, d] = STYLE_INFO[k]; return `<div><b>${esc(n)}</b><span>${esc(d)}</span></div>`; }).join('')}</div></details></div>
+      <details class="style-guide"><summary>What each interface style is for</summary><div class="style-guide-list">${STYLES.map(k => { const [n, d] = STYLE_INFO[k]; return `<div><b>${esc(n)}</b><span>${esc(d)}</span></div>`; }).join('')}</div></details>
+      <div class="line csswrap"><div><div class="l">Custom CSS</div><div class="s">Your own styles, applied on top of the theme and kept on this device. Start from the template to see every colour token you can change.</div>
+        <textarea class="inp css-box" id="custom-css" rows="7" spellcheck="false" autocomplete="off" aria-label="Custom CSS" placeholder="/* Paste or write CSS here */">${esc(s.customCss || '')}</textarea>
+        <div class="acts"><button class="btn sm" data-act="css-starter">Insert template</button><button class="btn sm" data-act="css-clear">Clear</button></div></div></div>
+    </div>
     <div class="box rise" style="--i:1" id="set-reading"><h2>Reading comfort</h2><p class="mut">Larger type and stronger contrast without changing the layout or colours you picked.</p>
       <div class="line"><div><div class="l">Text size</div><div class="s">Scales titles, labels and controls throughout Wavelength.</div></div><div class="chips"><button class="chip${(s.readSize || 'default') === 'default' ? ' on' : ''}" data-act="read-size" data-k="default">Default</button><button class="chip${s.readSize === 'large' ? ' on' : ''}" data-act="read-size" data-k="large">Large</button><button class="chip${s.readSize === 'xl' ? ' on' : ''}" data-act="read-size" data-k="xl">Extra large</button></div></div>
       ${tg('contrast', 'Stronger contrast', 'Darkens secondary text and strengthens borders and focus rings.')}
@@ -2337,9 +2384,6 @@ function vSet() {
       <div class="line sl"><div><div class="l">Dot opacity</div><div class="s">How visible the dots are. <b id="dotOpacity-v">${s.dotOpacity || 22}%</b></div></div><input class="range" type="range" min="4" max="60" step="1" value="${s.dotOpacity || 22}" data-dots="dotOpacity" aria-label="Dot opacity"></div>
       <div class="line sl"><div><div class="l">Dot spacing</div><div class="s">Distance between dots. <b id="dotScale-v">${s.dotScale || 22} px</b></div></div><input class="range" type="range" min="10" max="44" step="1" value="${s.dotScale || 22}" data-dots="dotScale" aria-label="Dot spacing"></div>
       <div class="line"><div><div class="l">Layout</div><div class="s">Where the sidebar, player and content sit. Currently <b id="layout-name">${layoutLabel()}</b>.</div></div><button class="btn" data-act="layout-gallery">Change layout</button></div>
-      <div class="line csswrap"><div><div class="l">Custom CSS</div><div class="s">Your own styles, applied on top of the theme and kept on this device. Start from the template to see every colour token you can change.</div>
-        <textarea class="inp css-box" id="custom-css" rows="7" spellcheck="false" autocomplete="off" aria-label="Custom CSS" placeholder="/* Paste or write CSS here */">${esc(s.customCss || '')}</textarea>
-        <div class="acts"><button class="btn sm" data-act="css-starter">Insert template</button><button class="btn sm" data-act="css-clear">Clear</button></div></div></div>
       <div class="line"><div><div class="l">Performance</div><div class="s">Lite removes blur, glow drift and extra animation to keep scrolling and playback smooth on phones. Automatic uses Lite on Android.</div></div><select class="inp" data-set="perf" aria-label="Performance mode">${[['auto', 'Automatic'], ['lite', 'Lite'], ['full', 'Full effects']].map(([v, n]) => `<option value="${v}"${(s.perf || 'auto') === v ? ' selected' : ''}>${n}</option>`).join('')}</select></div>
       ${tg('plSafe', 'Safe playlist mode', 'Opens playlists as plain text: no cover pictures, no animation, smaller batches. Turns on by itself if the app ever closes while opening a playlist.')}
       <div class="line"><div><div class="l">Scrollbars</div><div class="s">Slim bars that follow the rounded shape of each panel. They can also stay out of sight until you hover.</div></div><select class="inp" data-set="scrollbar" aria-label="Scrollbar style">${SCROLLBARS.map(([v, l]) => `<option value="${v}"${(s.scrollbar || 'pill') === v ? ' selected' : ''}>${l}</option>`).join('')}</select></div>
@@ -2362,6 +2406,7 @@ function vSet() {
       ${NATIVE ? '' : tg('gapless', 'Gapless transitions', 'Prepares the next track early for a smoother change.')}
       ${tg('resume', 'Resume last session', 'Restore your queue and position next time you open Wavelength.')}
       ${NATIVE ? `<div class="line"><div><div class="l">Volume</div><div class="s">Controls the phone’s media volume, the same stream the hardware keys change.</div></div><input class="inp range" type="range" min="0" max="100" step="1" value="${Math.round((s.volume || 0) * 100)}" data-volset aria-label="Volume"></div>` : ''}
+      ${NATIVE ? '' : `<div class="line"><div><div class="l">Volume step</div><div class="s">How much the up and down arrow keys and the mouse wheel change the volume. Hold Shift while scrolling for 1%.</div></div><select class="inp" data-set="volStep" aria-label="Volume step">${[1, 2, 5, 10, 20].map(n => `<option value="${n}"${Math.round(+s.volStep || 5) === n ? ' selected' : ''}>${n}%</option>`).join('')}</select></div>`}
       ${tg('smartVolume', 'Smart volume', NATIVE
         ? 'Samples the start of each song and turns loud songs down a little. It never boosts above your volume, so quiet songs stay quiet. Best-effort, not a studio master.'
         : 'Nudges quiet songs up and loud songs down while they play. Best-effort loudness balancing, not a studio master.')}
@@ -2396,7 +2441,7 @@ function vSet() {
       ${h.localDir ? `<div class="line"><div><div class="l">Local folder</div><div class="s mono-break">${esc(h.localDir)}</div></div><button class="btn" data-go="local">Open</button></div>` : ''}
       <div class="storage-box" id="storage-stats">${storageHTML()}</div>
       <div class="line"><div><div class="l">Playback cache</div><div class="s">Downloaded songs and covers stay. Only temporary stream files are cleared.</div></div><button class="btn" data-act="clear-cache">Clear cache</button></div></div>`}
-    ${NATIVE ? `<div class="box rise" style="--i:4" id="set-import"><h2>Spotify import</h2><p class="mut">Spotify account import runs on the computer for now. On the phone you can paste a list of songs and match it on YouTube.</p><button class="btn" data-go="import">Paste a song list</button></div>` : `<div class="box rise" style="--i:4" id="set-import"><h2>Spotify</h2><div class="line"><div><div class="l">Client ID</div><div class="s">${h.clientId ? esc(h.clientId.slice(0, 6)) + '…' : 'Not set'} · ${h.spotifyConnected ? 'connected' : 'not connected'}</div></div><button class="btn" data-go="import">Manage</button></div>
+    ${NATIVE ? `<div class="box rise" style="--i:4" id="set-import"><h2>Import</h2><p class="mut">Spotify account import runs on the computer for now. On the phone you can paste a list of songs and match it on YouTube.</p><button class="btn" data-go="import">Paste a song list</button></div>` : `<div class="box rise" style="--i:4" id="set-import"><h2>Spotify</h2><div class="line"><div><div class="l">Client ID</div><div class="s">${h.clientId ? esc(h.clientId.slice(0, 6)) + '…' : 'Not set'} · ${h.spotifyConnected ? 'connected' : 'not connected'}</div></div><button class="btn" data-go="import">Manage</button></div>
       <div class="line"><div><div class="l">Importing</div><div class="s">Preview playlists, keep matched songs, and choose a cover before saving.</div></div><button class="btn" data-go="import">Open import</button></div></div>`}
     ${NATIVE ? `<div class="box rise" style="--i:5" id="set-lock"><h2>Lock screen</h2><p class="mut">What appears over the lock screen while music plays. Open Preview to try changes.</p>
       <div class="line"><div><div class="l">Layout</div><div class="s">Artwork first, compact, visualizer first, or just the title.</div></div><select class="inp" data-set="lockLayout" aria-label="Lock-screen layout">${[['art', 'Artwork'], ['compact', 'Compact'], ['viz', 'Visualizer first'], ['minimal', 'Title only']].map(([v, n]) => `<option value="${v}"${(s.lockLayout || 'art') === v ? ' selected' : ''}>${n}</option>`).join('')}</select></div>
@@ -2588,10 +2633,20 @@ const nav = h => { if (location.hash.slice(1) === h) route(); else location.hash
 const refreshView = () => { if (curRoute !== 'search') draw(); };
 
 /* ═════════ sidebar ═════════ */
+function plMoveModal(id) {
+  const p = plById(id); if (!p) return;
+  const banned = new Set([p.id, ...plBelow(p.id).map(k => k.id)]), here = plUp(p);
+  const row = (to, label, depth) => `<button class="btn${(here ? here.id : '') === to ? ' solid' : ''}" data-act="plmove-to" data-id="${p.id}" data-to="${to}" style="display:block;width:100%;text-align:left;margin:4px 0;padding-left:${14 + depth * 18}px">${esc(label)}</button>`;
+  const rows = plTree().filter(x => !banned.has(x.id)).map(x => row(x.id, x.name, plDepth(x))).join('');
+  modal(`<div class="eyebrow">Playlist</div><h3 class="imp-title">Move “${esc(p.name)}”</h3>
+    <p class="mut">Choose the playlist it should sit inside. Its songs stay in it, and playlists already inside it move along.</p>
+    <div style="max-height:46vh;overflow:auto;margin:10px 0">${row('', 'Top level (Library)', 0)}${rows || '<p class="mut">You have no other playlists yet.</p>'}</div>
+    <div class="acts end"><button class="btn" data-act="close-modal">Cancel</button></div>`);
+}
 function drawSide() {
   $('#side-pl').innerHTML = `<div class="spl" data-go="liked" title="Liked Songs"><div class="cover liked" style="width:38px;border-radius:12px">${I.heartF}</div><div><div class="n">Liked Songs</div><div class="c">${S.liked.length} songs</div></div></div>` +
     `<div class="spl" data-go="local" title="Local files"><div class="cover local-cover" style="width:38px;border-radius:12px">${I.disc}</div><div><div class="n">Local files</div><div class="c">${R.localReady ? plural(R.local.length, 'song') : 'Lossless audio'}</div></div></div>` +
-    [...pinnedPls(), ...S.playlists.filter(p => !isPinned(p.id))].map(p => `<div class="spl${isPinned(p.id) ? ' pinned' : ''}" data-go="playlist/${p.id}" title="${esc(p.name)}${isPinned(p.id) ? ' (pinned)' : ''}">${cover(p)}<div><div class="n">${esc(p.name)}</div><div class="c">${p.tracks.length} songs</div></div></div>`).join('');
+    [...pinnedPls(), ...plTree().filter(p => !isPinned(p.id))].map(p => `<div class="spl${isPinned(p.id) ? ' pinned' : ''}${!isPinned(p.id) && plDepth(p) ? ' nested' : ''}"${!isPinned(p.id) && plDepth(p) ? ` style="margin-left:${Math.min(plDepth(p), 4) * 14}px"` : ''} data-go="playlist/${p.id}" title="${esc(p.name)}${isPinned(p.id) ? ' (pinned)' : ''}">${cover(p)}<div><div class="n">${esc(p.name)}</div><div class="c">${p.tracks.length} songs</div></div></div>`).join('');
   syncShortcuts();
 }
 
@@ -2870,11 +2925,25 @@ function synthLevel(i, n) {
 function vizResize() {
   const c = $('#viz'); if (!c) return;
   const w = Math.max(1, c.clientWidth), h = Math.max(1, c.clientHeight);
-  const dpr = Math.min(NATIVE ? 1.5 : 2, devicePixelRatio || 1);
+  // Full-screen visualizer: draw at the screen's real pixel density (a 4K panel at 250% would otherwise be stretched).
+  const cap = NATIVE ? 1.5 : document.documentElement.dataset.vizSize === 'full' ? 3 : 2;
+  const dpr = Math.min(cap, devicePixelRatio || 1);
   vizW = w; vizH = h; vizDpr = dpr;
   const cw = Math.round(w * dpr), ch = Math.round(h * dpr);
   if (c.width !== cw || c.height !== ch) { c.width = cw; c.height = ch; }
 }
+/* Moving the window to another monitor, or changing Windows display scaling, changes devicePixelRatio without
+   resizing the canvas, so ResizeObserver never fires and the picture stays at the old resolution. */
+(function watchDpr() {
+  if (!window.matchMedia) return;
+  let mq;
+  const arm = () => {
+    mq = matchMedia(`(resolution: ${devicePixelRatio}dppx)`);
+    const on = () => { mq.removeEventListener('change', on); vizResize(); arm(); };
+    mq.addEventListener('change', on);
+  };
+  try { arm(); } catch {}
+})();
 function vizLoop(ts) {
   vizRaf = requestAnimationFrame(vizLoop);
   if (document.hidden) return;
@@ -4226,7 +4295,7 @@ function uiNow() {
   const artist = t.artist + (t.localId ? ' · ' + localQualityText(t) : '');
   for (const sel of ['#p-meta', '#np-art', '.np-meta']) { const n = $(sel); if (n) { n.classList.remove('swap'); void n.offsetWidth; n.classList.add('swap'); } }
   $('#p-title').textContent = t.title; $('#p-artist').textContent = artist;
-  swapArt($('#p-art'), art(t)); swapArt($('#np-art'), art(t));
+  swapArt($('#p-art'), art(t)); swapArt($('#np-art'), artHi(t));
   $('#np-title').textContent = t.title; $('#np-artist').textContent = artist;
   $('#np').style.setProperty('--np-art', t.art ? `url("${t.art.replace(/"/g, '%22')}")` : 'none');
   document.title = `${t.title} · ${t.artist}`;
@@ -4290,16 +4359,29 @@ function vidStop() {
   v.onerror = null; v.onloadeddata = null;
   try { v.pause(); v.removeAttribute('src'); v.load(); } catch {}
 }
+/* What the webview can decode decides which stream to ask for. WebKitGTK without GStreamer's libav cannot play
+   H.264 but usually plays WebM, so asking for H.264 first only wastes a round trip (and on some systems fails slowly). */
+function vidSupport(v) {
+  const q = t => { try { return v.canPlayType(t) || ''; } catch { return ''; } };
+  return { h264: q('video/mp4; codecs="avc1.42E01E"'), vp9: q('video/webm; codecs="vp9"'), vp8: q('video/webm; codecs="vp8"') };
+}
 function vidLoad(id, alt = false) {
   const v = $('#np-vid'); if (!v) return;
   VID.id = id; VID.alt = alt; v.muted = true;
+  const sup = vidSupport(v), anyCodec = !!(sup.h264 || sup.vp9 || sup.vp8);
+  if (!alt && anyCodec && !sup.h264 && (sup.vp9 || sup.vp8)) return vidLoad(id, true);
+  if (!alt) breadcrumb('video support ' + JSON.stringify(sup));
   vidMsg(alt ? 'Trying another video format…' : 'Loading video…');
   v.onloadeddata = () => { if (VID.id !== id) return; vidMsg(''); vidClock(); };
   v.onerror = () => {
     if (VID.id !== id) return;
+    const e = v.error;
+    breadcrumb(`video error ${alt ? 'webm' : 'mp4'} code=${e ? e.code : '?'} ${e && e.message ? e.message.slice(0, 120) : ''}`);
     if (!alt) return vidLoad(id, true);
-    vidMsg('No video for this song. The music keeps playing.');
     breadcrumb('video failed ' + id);
+    vidMsg(LINUX_WEBVIEW && !anyCodec
+      ? 'This system cannot decode video. Install the GStreamer plugins (gst-plugins-good and gst-libav), or use the AppImage, which includes them. The music keeps playing.'
+      : 'No video for this song. The music keeps playing.');
   };
   v.src = `/api/video/${encodeURIComponent(id)}${alt ? '?alt=1' : ''}`;
   v.load();
@@ -4738,7 +4820,7 @@ async function spImport(kind, id) {
   } catch (e) { setImpStatus(e.message, 'error'); toast(e.message); }
   finally { impBusy(false); }
 }
-const MQ = { q: [], run: 0, done: 0, total: 0 };
+const MQ = { q: [], run: 0, done: 0, total: 0, missed: [], failed: 0 };
 function startMatching(tracks) {
   const todo = tracks.filter(t => !t.ytId && !t.miss && !MQ.q.includes(t));
   MQ.q.push(...todo); MQ.total += todo.length; pump(); updMatch();
@@ -4746,11 +4828,28 @@ function startMatching(tracks) {
 function pump() {
   while (MQ.run < 3 && MQ.q.length) {
     const t = MQ.q.shift(); MQ.run++;
-    resolve(t).catch(() => {}).finally(() => {
+    resolve(t).then(() => { if (t.miss && !t.ytId) MQ.missed.push(t); }).catch(() => { MQ.failed++; }).finally(() => {
       MQ.run--; MQ.done++; updMatch(); pump();
-      if (!MQ.q.length && !MQ.run) { MQ.done = MQ.total = 0; save(); toast('Matching finished'); updMatch(); refreshView(); }
+      if (!MQ.q.length && !MQ.run) {
+        const missed = MQ.missed, failed = MQ.failed;
+        MQ.done = MQ.total = 0; MQ.missed = []; MQ.failed = 0;
+        save(); updMatch(); refreshView();
+        if (missed.length || failed) showUnmatched(missed, failed);
+        else toast('Matching finished');
+      }
     });
   }
+}
+/* Says exactly which songs the import could not find on YouTube, instead of a bare "finished". */
+function showUnmatched(missed, failed) {
+  toast(missed.length ? `Matching finished — ${plural(missed.length, 'song')} not found` : 'Matching finished — some songs could not be checked');
+  const shown = missed.slice(0, 200);
+  const rows = shown.map(t => `<li><b>${esc(t.title || 'Untitled')}</b>${t.artist ? ` <span class="mut">· ${esc(t.artist)}</span>` : ''}</li>`).join('');
+  modal(`<div class="eyebrow">Import</div><h3 class="imp-title">${missed.length ? `${plural(missed.length, 'song')} couldn’t be found` : 'Some songs could not be checked'}</h3>
+    ${missed.length ? `<p class="mut">Wavelength found no YouTube match for these. They stay in the playlist, shown dimmed, so you can search for them by hand or edit the title and artist.</p>
+    <ul class="unmatched" style="max-height:46vh;overflow:auto;margin:12px 0;padding-left:18px;line-height:1.7">${rows}${missed.length > shown.length ? `<li class="mut">…and ${missed.length - shown.length} more</li>` : ''}</ul>` : ''}
+    ${failed ? `<p class="mut">${plural(failed, 'song')} could not be checked because the connection failed. Open the playlist and use “Match the rest” to try them again.</p>` : ''}
+    <div class="acts end"><button class="btn solid" data-act="close-modal">Done</button></div>`);
 }
 function updMatch() {
   const bar = $('#match-bar'); if (!bar) return;
@@ -5067,12 +5166,25 @@ const acts = {
   },
   matchrest: el => startMatching(ctxList(el.dataset.id)),
   newpl: () => plModal(), editpl: el => plModal(el.dataset.id),
+  plmove: el => plMoveModal(el.dataset.id),
+  'plmove-to': el => {
+    const p = plById(el.dataset.id); if (!p) return;
+    const to = el.dataset.to || '';
+    if (to && (to === p.id || plBelow(p.id).some(k => k.id === to) || !plById(to))) return toast('A playlist cannot go inside itself');
+    if (to) p.parent = to; else delete p.parent;
+    save(); closeModal(true); drawSide(); refreshView();
+    toast(to ? `Moved “${p.name}” into “${plById(to).name}”` : `Moved “${p.name}” to the top level`);
+  },
   delpl: el => {
     const p = S.playlists.find(x => x.id === el.dataset.id); if (!p) return;
     const at = S.playlists.indexOf(p);
+    // Playlists inside it move up one level instead of vanishing with it.
+    const kids = plKids(p.id), outer = plUp(p);
+    kids.forEach(k => { if (outer) k.parent = outer.id; else delete k.parent; });
     S.playlists = S.playlists.filter(x => x !== p); save(); closeModal(true); drawSide(); nav('library');
     undoable(`Deleted “${p.name}”`, () => {
       S.playlists.splice(Math.min(at, S.playlists.length), 0, p);
+      kids.forEach(k => { if (plById(k.id)) k.parent = p.id; });
       save(); drawSide(); refreshView();
     }, () => delCover(p.cover && p.cover.url));
   },
@@ -5417,7 +5529,7 @@ document.addEventListener('change', e => {
     return;
   }
   if (k === 'motion') { S.settings.motion = el.value; applyMotion(); save(); vizSync(); return; }
-  S.settings[k] = k === 'quality' ? +el.value : el.value; save();
+  S.settings[k] = (k === 'quality' || k === 'volStep') ? +el.value : el.value; save();
   if (k.startsWith('skip')) smartSettingsChanged();
   if (k === 'scrollbar') applyScrollbar();
   if (k === 'perf') applyPerf();
@@ -5453,7 +5565,7 @@ document.addEventListener('pointerdown', e => {
 document.addEventListener('wheel', e => {
   const vol = e.target.closest('[data-vol]'); if (!vol) return;
   e.preventDefault();
-  const step = e.shiftKey ? 0.01 : 0.04;
+  const step = e.shiftKey ? 0.01 : volStep();
   setVol((R.muted ? 0 : S.settings.volume) - Math.sign(e.deltaY) * step);
 }, { passive: false });
 document.addEventListener('dblclick', e => {
@@ -5641,11 +5753,11 @@ document.addEventListener('keydown', e => {
       if (e.key === 'ArrowRight') audio.currentTime = Math.min(d, audio.currentTime + 5);
       if (e.key === 'Home') audio.currentTime = 0;
       if (e.key === 'End') audio.currentTime = Math.max(0, d - 1);
-      if (e.key === 'ArrowUp') setVol(S.settings.volume + 0.05);
-      if (e.key === 'ArrowDown') setVol(S.settings.volume - 0.05);
+      if (e.key === 'ArrowUp') setVol(S.settings.volume + volStep());
+      if (e.key === 'ArrowDown') setVol(S.settings.volume - volStep());
     } else {
-      if (e.key === 'ArrowUp' || e.key === 'ArrowRight') setVol((R.muted ? 0 : S.settings.volume) + 0.05);
-      if (e.key === 'ArrowDown' || e.key === 'ArrowLeft') setVol((R.muted ? 0 : S.settings.volume) - 0.05);
+      if (e.key === 'ArrowUp' || e.key === 'ArrowRight') setVol((R.muted ? 0 : S.settings.volume) + volStep());
+      if (e.key === 'ArrowDown' || e.key === 'ArrowLeft') setVol((R.muted ? 0 : S.settings.volume) - volStep());
       if (e.key === 'Home') setVol(0); if (e.key === 'End') setVol(1);
     }
     return;
@@ -5655,8 +5767,8 @@ document.addEventListener('keydown', e => {
   if (e.code === 'Space' || e.code === 'KeyK') { e.preventDefault(); togglePlay(); haptic(5); }
   else if (e.code === 'ArrowRight' && R.cur) { e.preventDefault(); audio.currentTime = Math.min(audio.duration || Infinity, audio.currentTime + 5); }
   else if (e.code === 'ArrowLeft' && R.cur) { e.preventDefault(); audio.currentTime = Math.max(0, audio.currentTime - 5); }
-  else if (e.code === 'ArrowUp') { e.preventDefault(); setVol(S.settings.volume + 0.05); }
-  else if (e.code === 'ArrowDown') { e.preventDefault(); setVol(S.settings.volume - 0.05); }
+  else if (e.code === 'ArrowUp') { e.preventDefault(); setVol(S.settings.volume + volStep()); }
+  else if (e.code === 'ArrowDown') { e.preventDefault(); setVol(S.settings.volume - volStep()); }
   else if (e.code === 'KeyN') { if (canNext()) next(); }
   else if (e.code === 'KeyP') prev();
   else if (e.code === 'KeyM') toggleMute();

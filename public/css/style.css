@@ -2084,3 +2084,14 @@ html:not([data-viz-size=full]) .np.video-on #viz{display:none!important}
 /* 2.10: Amazon import drop target */
 .amz.drag{outline:2px dashed var(--accent);outline-offset:-6px}
 .amz label.btn{cursor:pointer}
+
+
+/* ── rendering cost: thumbnails and the full-screen player ─────────────────────────────────────────────────────── */
+/* Rows and covers that are off screen are skipped by layout and paint; their size is remembered once drawn. */
+.row{content-visibility:auto;contain-intrinsic-size:auto 58px}
+.row .art,.tile .art,.tile .cover{contain:layout paint style}
+.art img,.cover img{image-rendering:auto}
+/* A closed full-screen player used to stay alive as two blur layers (50 px backdrop and 90 px background) at screen
+   size, which a Windows GPU keeps repainting. Hidden, it costs nothing. */
+.np{visibility:hidden;transition:opacity .35s linear,transform .6s var(--soft),visibility 0s linear .6s}
+.np.open{visibility:visible;transition-delay:0s,0s,0s}

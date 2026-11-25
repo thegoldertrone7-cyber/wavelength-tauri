@@ -48,6 +48,7 @@ fn boot(
     let state = Arc::new(api::AppState::new(store));
     api::resume_sync_host(state.clone());
     if let Some((handle, updater_ready)) = shell {
+        state.updater.set_log_dir(dir.clone());
         state.updater.attach(handle, updater_ready);
     }
     let app = api::router(state, public.clone());
@@ -75,11 +76,15 @@ pub fn run() {
                 std::env::set_var(k, v);
             }
         }
-        // GPU compositing in WebKitGTK is the other common reason the web process dies (the window goes blank or the
-        // app closes the moment a long, image-heavy page such as a playlist is drawn). Software compositing is
-        // stable everywhere and this interface is plain enough that it stays smooth. WL_GPU=1 turns acceleration
-        // back on for anyone whose drivers are fine; WL_SAFE_RENDER is kept for compatibility.
-        if std::env::var_os("WL_GPU").is_none() && std::env::var_os("WEBKIT_DISABLE_COMPOSITING_MODE").is_none() {
+        // Software compositing is the safest mode for WebKitGTK, but it is also what stops <video> from drawing (the
+        // themed video in the full-screen player stays black or empty), so it is no longer forced. The page already
+        // protects playlists on this webview (lite mode, small batches, Safe playlist mode after a crash). Anyone whose
+        // window still goes blank or closes can set WL_SAFE_RENDER=1 to turn software compositing back on; an explicit
+        // WEBKIT_DISABLE_COMPOSITING_MODE from the user always wins.
+        if std::env::var_os("WL_SAFE_RENDER").is_some()
+            && std::env::var_os("WL_GPU").is_none()
+            && std::env::var_os("WEBKIT_DISABLE_COMPOSITING_MODE").is_none()
+        {
             std::env::set_var("WEBKIT_DISABLE_COMPOSITING_MODE", "1");
         }
     }

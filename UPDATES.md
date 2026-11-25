@@ -50,8 +50,8 @@ The first release after setup has to be installed by hand; every later one arriv
 - **macOS**: the app bundle is replaced in place, so Wavelength must live somewhere you can write to
   (`/Applications` is fine for the user who installed it). Builds are unsigned unless you add Apple
   certificates to the workflow, so the first launch needs right-click → Open.
-- **Linux**: in-app updates work for the AppImage. `.deb`/`.rpm`/Flatpak installs update through their own
-  channels.
+- **Linux**: in-app updates work for an AppImage in a folder you can write to. `.deb`/`.rpm`/Flatpak installs (and an
+  AppImage in a read-only folder) show "Get installer" instead; failures are logged to `wavelength.log`.
 - **Android** is the separate Kotlin app and keeps its own update channel.
 - `Cargo.lock` is committed and kept up to date; `cargo test --locked` passes. Regenerate and commit it after
   changing dependencies.

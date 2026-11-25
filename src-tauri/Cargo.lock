@@ -5918,7 +5918,7 @@ dependencies = [
 
 [[package]]
 name = "wavelength"
-version = "2.9.8"
+version = "2.9.9"
 dependencies = [
  "axum",
  "base64 0.22.1",
