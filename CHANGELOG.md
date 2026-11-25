@@ -1,5 +1,12 @@
 # Changelog
 
+## 2.9.8
+
+- **Windows no longer needs winget installs.** The app downloads yt-dlp, ffmpeg and ffprobe itself on first start
+  (into its data folder), keeps yt-dlp up to date, and shows setup progress and a retry button in the banner.
+  Also fixed on Windows: tool lookup (PATH was split on `:` and `.exe` was never tried), the default Music folder
+  (used `HOME`, which Windows does not set), and the console windows that flashed whenever a helper program ran.
+
 ## 2.9.7
 
 - **Amazon Music import.** Import → Amazon Music playlist takes a CSV, TSV, TXT, JSON or M3U export (from a playlist

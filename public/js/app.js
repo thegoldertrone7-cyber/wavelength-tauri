@@ -2066,7 +2066,7 @@ async function uploadLocalFiles(files) {
   const list = (files || []).filter(Boolean);
   if (!list.length) return;
   if (NATIVE) return toast('Local file import is not in this build yet; YouTube search and playlists work.');
-  if (R.health && !R.health.ffprobe) return toast('Local files need ffprobe — run: brew install ffmpeg');
+  if (R.health && !R.health.ffprobe) return toast(IS_WIN() ? 'Local files need ffprobe, which Wavelength is still downloading or could not fetch' : 'Local files need ffprobe — run: brew install ffmpeg');
   let added = 0, failed = 0;
   for (const file of list) {
     toast(`Adding ${file.name}…`);
@@ -2416,10 +2416,10 @@ function vSet() {
     <div class="box rise" style="--i:5" id="set-status"><h2>Status</h2>
       <div class="line"><div><div class="l">Keyboard shortcuts</div><div class="s">Open the full list with <b>?</b>.</div></div><button class="btn" data-act="shortcuts">${I.keyboard}Shortcuts</button></div>
       <div class="line"><div class="l">Version</div><div class="meta" id="set-version">${h.version ? 'v' + esc(h.version) : (R.stats && R.stats.version ? 'v' + esc(R.stats.version) : '—')}</div></div>
-      <div class="line"><div class="l">${NATIVE ? 'Playback engine' : 'yt-dlp'}</div><div class="meta">${NATIVE ? 'NewPipeExtractor · direct YouTube audio' : (h.ytdlp ? esc(h.ytdlp) : 'missing — brew install yt-dlp')}</div></div>
+      <div class="line"><div class="l">${NATIVE ? 'Playback engine' : 'yt-dlp'}</div><div class="meta">${NATIVE ? 'NewPipeExtractor · direct YouTube audio' : (h.ytdlp ? esc(h.ytdlp) : 'missing — ' + toolHint('yt-dlp'))}</div></div>
       ${NATIVE ? `<div class="line"><div class="l">Background audio</div><div class="meta">MediaSession + foreground notification</div></div>` : `
-      <div class="line"><div class="l">ffmpeg</div><div class="meta">${h.ffmpeg ? esc(h.ffmpeg) : 'missing — brew install ffmpeg'}</div></div>
-      <div class="line"><div class="l">ffprobe</div><div class="meta">${h.ffprobe ? esc(h.ffprobe) : 'missing — brew install ffmpeg'}</div></div>`}
+      <div class="line"><div class="l">ffmpeg</div><div class="meta">${h.ffmpeg ? esc(h.ffmpeg) : 'missing — ' + toolHint('ffmpeg')}</div></div>
+      <div class="line"><div class="l">ffprobe</div><div class="meta">${h.ffprobe ? esc(h.ffprobe) : 'missing — ' + toolHint('ffmpeg')}</div></div>`}
       <div class="line"><div class="l">Ads</div><div class="meta">None</div></div><div class="line"><div class="l">Price</div><div class="meta">Free</div></div></div></div>`;
 }
 
@@ -4762,7 +4762,7 @@ function updMatch() {
 async function download(t) {
   if (NATIVE) return toast('Streaming works now. Offline downloads are the next standalone step.');
   if (t.localId) return toast('This file is already saved locally and plays at its original quality');
-  if (R.health && !R.health.ffmpeg) return toast('MP3 needs ffmpeg — run: brew install ffmpeg');
+  if (R.health && !R.health.ffmpeg) return toast(IS_WIN() ? 'MP3 needs ffmpeg, which Wavelength is still downloading or could not fetch' : 'MP3 needs ffmpeg — run: brew install ffmpeg');
   try {
     if (!t.ytId) { toast('Matching on YouTube…'); await resolve(t); }
     if (!t.ytId) return toast('No YouTube match to download');
@@ -4782,11 +4782,25 @@ function dlPoll() {
 }
 
 /* ═════════ health ═════════ */
+const IS_WIN = () => !!(R.health && R.health.platform === 'windows');
+/* Windows sets yt-dlp and ffmpeg up by itself; elsewhere they come from the package manager. */
+const toolHint = pkg => IS_WIN() ? 'Wavelength downloads it by itself' : `brew install ${pkg}`;
+let toolsTimer;
 async function refreshHealth() {
   R.health = await api('/api/health').catch(() => null); const h = R.health;
+  const t = (h && h.tools) || {};
+  const win = h && h.platform === 'windows';
+  const retry = '<button class="btn" data-act="tools-retry" style="margin-left:10px">Try again</button>';
+  clearTimeout(toolsTimer);
+  if (win && t.state === 'downloading') toolsTimer = setTimeout(refreshHealth, 2500);
   $('#banner').innerHTML = !h ? '<div class="banner"><b>Can’t reach the Wavelength server.</b> Start it again from the terminal.</div>'
-    : !h.ytdlp ? '<div class="banner"><b>yt-dlp isn’t installed</b>, so nothing can play yet. Run <b>brew install yt-dlp ffmpeg</b> in Terminal, then reload.</div>'
-    : !h.ffmpeg ? '<div class="banner"><b>ffmpeg is missing.</b> Playback works, but MP3 downloads need it: <b>brew install ffmpeg</b></div>' : '';
+    : (win && t.state === 'downloading') ? `<div class="banner"><b>Setting up Wavelength…</b> ${esc(t.message || 'Downloading the music engine')} This only happens once, and playback starts when it finishes.</div>`
+    : !h.ytdlp ? (win
+      ? `<div class="banner"><b>The music engine could not be set up.</b> ${esc(t.message || 'Check your internet connection.')}${retry}</div>`
+      : '<div class="banner"><b>yt-dlp isn’t installed</b>, so nothing can play yet. Run <b>brew install yt-dlp ffmpeg</b> in Terminal, then reload.</div>')
+    : !h.ffmpeg ? (win
+      ? `<div class="banner"><b>ffmpeg could not be downloaded.</b> Playback works, but MP3 downloads need it.${retry}</div>`
+      : '<div class="banner"><b>ffmpeg is missing.</b> Playback works, but MP3 downloads need it: <b>brew install ffmpeg</b></div>') : '';
   if (curRoute === 'import' || curRoute === 'settings') draw();
 }
 
@@ -5344,6 +5358,7 @@ const acts = {
     if (k === 'headphonesPause') syncNativePrefs();
     if (k === 'noAi') { refreshView(); toast(S.settings.noAi ? 'No AI filter on · keyword based' : 'No AI filter off'); }
   },
+  'tools-retry': async () => { try { await api('/api/tools/setup', { method: 'POST' }); toast('Downloading…'); setTimeout(refreshHealth, 800); } catch (e) { toast(e.message); } },
   'save-dir': async () => { try { await api('/api/config', { method: 'PUT', json: { downloadDir: $('#dl-dir').value } }); await refreshHealth(); toast('Folder saved'); } catch (e) { toast(e.message); } },
 };
 document.addEventListener('pointerdown', () => { delete document.documentElement.dataset.kbd; }, true);

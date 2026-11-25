@@ -13,7 +13,6 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::process::Command;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tower_http::cors::CorsLayer;
@@ -88,6 +87,7 @@ pub fn router(state: Arc<AppState>, public_dir: PathBuf) -> Router {
     let api = Router::new()
         .route("/api/state", get(get_state).put(put_state))
         .route("/api/health", get(health))
+        .route("/api/tools/setup", post(tools_setup))
         .route("/api/config", get(get_config).put(put_config))
         .route("/api/stats", get(stats))
         .route("/api/search", get(search))
@@ -213,8 +213,15 @@ async fn health(State(st): State<Arc<AppState>>) -> Json<Value> {
         "spotifyConnected": false,
         "sync": true,
         "audio": "native",
-        "platform": std::env::consts::OS
+        "platform": std::env::consts::OS,
+        "tools": crate::tools::status_json()
     }))
+}
+
+/// Retries the Windows tool download (yt-dlp, ffmpeg) after a failure such as no internet connection.
+async fn tools_setup() -> Json<Value> {
+    crate::tools::ensure_async();
+    Json(json!({ "ok": true }))
 }
 
 async fn stats(State(st): State<Arc<AppState>>) -> Json<Value> {
@@ -282,24 +289,31 @@ pub(crate) fn ytdlp_bin() -> String {
 }
 
 pub(crate) fn find_bin(name: &str) -> Option<String> {
-    let home = std::env::var("HOME").unwrap_or_default();
-    let mut dirs: Vec<String> = vec![
-        "/opt/homebrew/bin".into(),
-        "/usr/local/bin".into(),
-        "/usr/bin".into(),
-        "/bin".into(),
-        format!("{home}/.local/bin"),
-        format!("{home}/bin"),
-    ];
-    if let Ok(path) = std::env::var("PATH") {
-        for dir in path.split(':') {
-            if !dir.is_empty() && !dirs.iter().any(|d| d == dir) {
-                dirs.push(dir.to_string());
+    // The copy Wavelength downloaded for itself (Windows) wins over anything on PATH.
+    if let Some(p) = crate::tools::managed_path(name) {
+        return Some(p.to_string_lossy().to_string());
+    }
+    let exe = crate::tools::exe_name(name);
+    let home = std::env::var("HOME")
+        .or_else(|_| std::env::var("USERPROFILE"))
+        .unwrap_or_default();
+    let mut dirs: Vec<PathBuf> = Vec::new();
+    if !cfg!(windows) {
+        for d in ["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin"] {
+            dirs.push(PathBuf::from(d));
+        }
+        dirs.push(PathBuf::from(&home).join(".local/bin"));
+        dirs.push(PathBuf::from(&home).join("bin"));
+    }
+    if let Some(path) = std::env::var_os("PATH") {
+        for dir in std::env::split_paths(&path) {
+            if !dir.as_os_str().is_empty() && !dirs.contains(&dir) {
+                dirs.push(dir);
             }
         }
     }
     for dir in dirs {
-        let candidate = std::path::Path::new(&dir).join(name);
+        let candidate = dir.join(&exe);
         if candidate.is_file() {
             return Some(candidate.to_string_lossy().to_string());
         }
@@ -316,9 +330,13 @@ fn ffmpeg_bin() -> String {
 }
 
 fn has_cmd(name: &str) -> bool {
+    if cfg!(windows) {
+        // Starting yt-dlp.exe only to ask its version takes a second, and health is polled.
+        return find_bin(name).is_some();
+    }
     let bin = find_bin(name).unwrap_or_else(|| name.to_string());
     for flag in ["--version", "-version"] {
-        if Command::new(&bin)
+        if crate::tools::command(&bin)
             .arg(flag)
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
@@ -367,7 +385,7 @@ impl Drop for YtSlot {
 
 fn run_ytdlp(args: &[String], timeout: Duration) -> Result<String, String> {
     let _slot = YtSlot::take();
-    let mut child = Command::new(ytdlp_bin())
+    let mut child = crate::tools::command(ytdlp_bin())
         .args(args)
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
@@ -921,7 +939,7 @@ fn probe_local(path: &std::path::Path, rel: &str) -> Value {
     let mut sample_rate = 0u64;
     let mut bitrate = 0u64;
 
-    if let Ok(out) = Command::new(ffprobe_bin())
+    if let Ok(out) = crate::tools::command(ffprobe_bin())
         .args([
             "-v",
             "quiet",
@@ -1101,7 +1119,7 @@ async fn silence(
 }
 
 fn detect_silence(path: &PathBuf) -> Result<(f64, Vec<(f64, f64)>), String> {
-    let out = Command::new(ffmpeg_bin())
+    let out = crate::tools::command(ffmpeg_bin())
         .args([
             "-hide_banner",
             "-nostats",
@@ -1228,7 +1246,7 @@ fn spawn_download(yt_id: String, title: String, store: Arc<Store>, st: Arc<AppSt
             args.push(ffmpeg);
         }
         args.push(format!("https://www.youtube.com/watch?v={yt_id}"));
-        let out = Command::new(ytdlp_bin()).args(args).output();
+        let out = crate::tools::command(ytdlp_bin()).args(args).output();
         match out {
             Ok(o) if o.status.success() => {
                 set_status("done", "");
@@ -2060,7 +2078,13 @@ fn remote_json(
 }
 
 fn hostname() -> String {
-    Command::new("hostname")
+    // Windows: read the name from the environment instead of starting hostname.exe.
+    if cfg!(windows) {
+        if let Some(name) = std::env::var("COMPUTERNAME").ok().filter(|s| !s.is_empty()) {
+            return name;
+        }
+    }
+    crate::tools::command("hostname")
         .output()
         .ok()
         .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())

@@ -60,7 +60,8 @@ a live level meter, and its keys control playback in milliseconds.
 
 ## Desktop app (macOS / Windows / Linux)
 
-You need Node.js, Rust, yt-dlp and ffmpeg (which includes ffprobe). macOS:  `brew install node yt-dlp ffmpeg`
+You need Node.js and Rust. On macOS and Linux you also need yt-dlp and ffmpeg (which includes ffprobe); on macOS:
+`brew install node yt-dlp ffmpeg`. On Windows nothing else is needed: the app downloads them itself (see below).
 
     npm install
     npm run dev          # opens the app with hot reload
@@ -77,8 +78,13 @@ release each ship macOS, Windows, Linux and Android together.
 
 The app is unsigned. First launch on macOS: right-click the app -> Open, or run
 `xattr -cr /Applications/Wavelength.app`.
-yt-dlp and ffmpeg/ffprobe are not bundled with the normal desktop builds; install them as above
+yt-dlp and ffmpeg/ffprobe are not bundled with the macOS and Linux desktop builds; install them as above
 (`brew upgrade yt-dlp` if playback ever breaks). The Flatpak bundles both tools.
+
+**Windows** needs nothing installed. On first start the app downloads `yt-dlp.exe`, `ffmpeg.exe` and `ffprobe.exe` into
+`%APPDATA%\app.wavelength.music.tauri\tools` (about 150 MB, once, using the PowerShell that ships with Windows to
+unpack ffmpeg) and checks yt-dlp for updates once a day. Copies already on PATH are used instead of downloading.
+If the download fails (no internet), a banner offers Try again. Code: `src-tauri/src/tools.rs`.
 
 ## Browser mode (no Electron)
 

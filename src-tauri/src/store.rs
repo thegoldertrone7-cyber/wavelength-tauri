@@ -271,12 +271,16 @@ impl Store {
 }
 
 pub fn default_download_dir() -> String {
-    let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
+    let home = std::env::var("HOME")
+        .or_else(|_| std::env::var("USERPROFILE"))
+        .unwrap_or_else(|_| ".".into());
     format!("{home}/Music/Wavelength")
 }
 
 pub fn default_data_dir() -> PathBuf {
-    let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
+    let home = std::env::var("HOME")
+        .or_else(|_| std::env::var("USERPROFILE"))
+        .unwrap_or_else(|_| ".".into());
     let home = PathBuf::from(home);
     if cfg!(target_os = "windows") {
         let base = std::env::var("APPDATA")

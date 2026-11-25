@@ -6,6 +6,7 @@ pub mod diag;
 pub mod generator;
 pub mod lyrics;
 pub mod store;
+pub mod tools;
 pub mod updater;
 
 use std::net::TcpStream;
@@ -34,6 +35,9 @@ fn boot(
     shell: Option<(tauri::AppHandle, bool)>,
 ) -> Result<(), String> {
     let store = store::Store::open(&dir)?;
+    // Windows: fetch yt-dlp / ffmpeg / ffprobe into the data folder if they are not already available.
+    tools::init(&dir);
+    tools::ensure_async();
     // An explicit WL_DATA_DIR is a test or a second profile: keep it isolated
     // instead of adopting the real library from another folder.
     if std::env::var_os("WL_DATA_DIR").is_none() {

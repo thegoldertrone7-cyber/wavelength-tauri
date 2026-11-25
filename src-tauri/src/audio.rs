@@ -579,7 +579,7 @@ fn fetch_to_cache(cache: &Path, src: &str, id: &str) -> Result<PathBuf, String> 
                 return Ok(hit);
             }
             let template = cache.join(format!("{yt_id}.%(ext)s"));
-            let out = std::process::Command::new(crate::api::ytdlp_bin())
+            let out = crate::tools::command(crate::api::ytdlp_bin())
                 .args([
                     "-f",
                     "bestaudio[ext=m4a]/bestaudio[acodec^=mp4a]/bestaudio",
